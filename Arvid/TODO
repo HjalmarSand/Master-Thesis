@@ -1,1 +1,3 @@
 Since a lot of the features extracted from the images behind the boat is the water and the person steering it, and these are so numerous, perhaps performing an ititial somewhat bad filtering of these features in the image can improve the matching? We could cut out an equally large part of the images since we always know how much of it will be occupied by the boat.
+
+Above point, the boat seems to be the issue in both directions with it containing a lot of keypoints. Perhaps a bad semantic segmentation can remove water and boat that is often foung, as well as maybe sun. We can also try to alter the dataset to only use images that actually have good keypoint matches by manually inspecting and then tryint to do a reconstruction of the parameters from these.
