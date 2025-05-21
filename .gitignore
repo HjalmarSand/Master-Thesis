@@ -1,3 +1,8 @@
 dataset1/
 
 colmap_fisheye_project/
+
+Arvid/__pycache__/
+*.pyc
+*.pyo
+*.pyd
