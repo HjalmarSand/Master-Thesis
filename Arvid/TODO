@@ -1,0 +1,1 @@
+Since a lot of the features extracted from the images behind the boat is the water and the person steering it, and these are so numerous, perhaps performing an ititial somewhat bad filtering of these features in the image can improve the matching? We could cut out an equally large part of the images since we always know how much of it will be occupied by the boat.
