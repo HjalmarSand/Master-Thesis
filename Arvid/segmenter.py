@@ -6,6 +6,8 @@ from transformers import SegformerImageProcessor, SegformerForSemanticSegmentati
 import matplotlib.pyplot as plt
 import numpy as np
 
+import config
+
 def load_model_and_processor(model_name="nvidia/segformer-b0-finetuned-ade-512-512", device="cpu"):
     """Loads the SegFormer model and its processor."""
     print(f"Loading model: {model_name} on device: {device}")
@@ -34,9 +36,9 @@ def segment_sky(image_path, processor, model, device):
 
     Returns:
         tuple: (original_image, full_segmentation_map, sky_mask)
-               original_image (PIL.Image): The loaded original image.
-               full_segmentation_map (np.array): The predicted class for each pixel.
-               sky_mask (np.array): Boolean array, True where sky is detected.
+                original_image (PIL.Image): The loaded original image.
+                full_segmentation_map (np.array): The predicted class for each pixel.
+                sky_mask (np.array): Boolean array, True where sky is detected.
     """
     try:
         image = Image.open(image_path).convert("RGB")
@@ -95,14 +97,9 @@ def segment_sky(image_path, processor, model, device):
     return image, predicted_semantic_map, sky_mask
 
 if __name__ == "__main__":
-    # --- Configuration ---
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    relative_image_path_from_script = "../dataset1/images/0801.jpg"
-    
-    IMAGE_PATH = os.path.join(script_dir, relative_image_path_from_script)
+    IMAGE_PATH = os.path.join(config.COLMAP_DIR, "images_cam1/cam1_0801.jpg")
 
     MODEL_NAME = "nvidia/segformer-b0-finetuned-ade-512-512" 
-    # --- End Configuration ---
 
     # Check for image existence before proceeding
     try:

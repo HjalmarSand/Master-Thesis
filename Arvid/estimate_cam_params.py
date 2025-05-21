@@ -3,14 +3,9 @@ import shutil
 from pathlib import Path
 import config
 
-COLMAP_EXE_PATH = shutil.which("colmap")
+COLMAP_EXE_PATH = "colmap" # Default to "colmap" command
 
-if COLMAP_EXE_PATH:
-    print(f"Using Colmap from system PATH: {COLMAP_EXE_PATH}")
-else:
-    print(f"'colmap' not found in system PATH. Assuming 'colmap' command will resolve.")
-    print(f"If Colmap calls fail, ensure 'colmap' is in your system PATH or manually set COLMAP_EXE_PATH.")
-    COLMAP_EXE_PATH = "colmap" # Default to "colmap" command
+#COLMAP_EXE_PATH = shutil.which("colmap")
 
 # --- Camera Hardware Specifications ---
 SENSOR_FOCAL_LENGTH_MM = 0.87
@@ -72,11 +67,29 @@ def estimate_camera_parameters(camera_name: str,
         return None
 
     print(f"\n[ {camera_name} ] Running Feature Matching...")
+    
+    #cmd_feature_matching = [
+    #    COLMAP_EXE_PATH, "exhaustive_matcher",
+    #    "--database_path", str(database_path),
+    #    "--SiftMatching.use_gpu", "1",
+    #]
+
+    #print(f"Database path {database_path}")
+
     cmd_feature_matching = [
-        COLMAP_EXE_PATH, "exhaustive_matcher",
-        "--database_path", str(database_path),
-        "--SiftMatching.use_gpu", "1",
-    ]
+    COLMAP_EXE_PATH, "sequential_matcher", # Using sequential matcher instead
+    "--database_path", str(database_path),
+    "--SequentialMatching.overlap", "15",
+    #"--SequentialMatching.quadratic_overlap", "1",
+    # "--SequentialMatching.min_num_matches", "10", # * Default is 15, might need to lower 
+    # "--SequentialMatching.max_distance_ratio", "0.85", # * Default 0.8. Slightly less strict.
+    "--SiftMatching.use_gpu", "0",
+]
+    
+    #command_string_for_terminal = " ".join(f'"{arg}"' if " " in arg else arg for arg in cmd_feature_matching)
+    #print("\n--- Command as a string (for manual terminal execution): ---")
+    #print(command_string_for_terminal)
+
     try:
         subprocess.run(cmd_feature_matching, check=True, capture_output=True, text=True)
         print(f"[ {camera_name} ] Feature matching successful.")
