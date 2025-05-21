@@ -1,0 +1,12 @@
+dataset1/
+
+.venv/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+Hjalmar/dataset1/
+Hjalmar/sample_images/
+Hjalmar/skyline_db.json
