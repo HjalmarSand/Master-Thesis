@@ -7,10 +7,10 @@ from typing import Optional, Union
 class Visualizer:
 
     def display_segmentation_results(self,
-                                     image_source: Union[str, Image.Image, np.ndarray],
-                                     sky_mask_np: Optional[np.ndarray] = None,
-                                     skyline_vector: Optional[np.ndarray] = None,
-                                     title_prefix: str = ""):
+                                    image_source: Union[str, Image.Image, np.ndarray],
+                                    sky_mask_np: Optional[np.ndarray] = None,
+                                    skyline_vector: Optional[np.ndarray] = None,
+                                    title_prefix: str = ""):
         
         plots_info = [] # List to store what to plot
 

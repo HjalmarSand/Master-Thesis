@@ -14,8 +14,8 @@ class SkylineMatcher:
 
         Args:
             metric (str): The distance metric to use for comparison.
-                          Supported: 'mse' (Mean Squared Error), 'mae' (Mean Absolute Error).
-                          Future: 'dtw', 'cosine'.
+                        Supported: 'mse' (Mean Squared Error), 'mae' (Mean Absolute Error).
+                        Future: 'dtw', 'cosine'.
         """
         if metric not in ['mse', 'mae']:
             raise ValueError(f"Unsupported metric: {metric}. Supported metrics are 'mse', 'mae'.")
@@ -36,7 +36,7 @@ class SkylineMatcher:
         """
         if skyline1.shape != skyline2.shape:
             print(f"Warning: Skyline vectors have different lengths ({skyline1.shape[0]} vs {skyline2.shape[0]}). "
-                  "Results may be unreliable. Consider resampling to a common length.")
+                "Results may be unreliable. Consider resampling to a common length.")
             len1, len2 = len(skyline1), len(skyline2)
             if len1 < len2:
                 skyline1 = np.pad(skyline1, (0, len2 - len1), 'edge') # Pad with edge values
@@ -52,9 +52,9 @@ class SkylineMatcher:
         return float('inf') # Should not happen if metric is validated
 
     def find_matches(self, 
-                     query_skyline: np.ndarray, 
-                     database_skylines: List[Tuple[str, np.ndarray]], 
-                     top_n: int = 5) -> List[Tuple[str, float]]:
+                    query_skyline: np.ndarray, 
+                    database_skylines: List[Tuple[str, np.ndarray]], 
+                    top_n: int = 5) -> List[Tuple[str, float]]:
         """
         Finds the top N most similar skylines from the database to the query skyline.
 
@@ -66,7 +66,7 @@ class SkylineMatcher:
 
         Returns:
             List[Tuple[str, float]]: A list of (image_id, distance_score) tuples,
-                                     sorted by distance (lower is better).
+                                    sorted by distance (lower is better).
         """
         if not database_skylines:
             print("Database is empty. No matches can be found.")

@@ -22,7 +22,7 @@ class SkylineExtractor:
 
         Returns:
             Optional[np.ndarray]: A 1D NumPy array of length W representing the y-coordinate 
-                                  of the skyline for each column. Returns None if the mask is invalid.
+                                of the skyline for each column. Returns None if the mask is invalid.
         """
         if sky_mask_np is None or sky_mask_np.ndim != 2 or sky_mask_np.size == 0:
             print("Error: Invalid sky mask provided for skyline extraction.")
@@ -37,7 +37,7 @@ class SkylineExtractor:
             
             if sky_pixel_indices_in_column.size > 0:
                 # The skyline is the y-coordinate of the lowest sky pixel in this column
-                skyline_profile[x_col] = np.min(sky_pixel_indices_in_column)
+                skyline_profile[x_col] = np.max(sky_pixel_indices_in_column)
             else:
                 # No sky pixels in this column (e.g., a tall cliff fills the view).
                 skyline_profile[x_col] = 0 

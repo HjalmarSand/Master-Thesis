@@ -23,7 +23,7 @@ SEGMENTATION_MODEL_NAME = "nvidia/segformer-b0-finetuned-ade-512-512"
 SKY_LABEL = "sky" # The label name for sky in the chosen model
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-IMAGE_DATABASE_DIR = os.path.join(BASE_DIR, "dataset1", "images")
+IMAGE_DATABASE_DIR = os.path.join(BASE_DIR, "dataset1", "split_images")
 IMAGE_QUERY_DIR = os.path.join(BASE_DIR,"sample_images")
 SKYLINE_DB_FILE = os.path.join(BASE_DIR,"skyline_db.json")
 
@@ -33,10 +33,10 @@ os.makedirs(IMAGE_QUERY_DIR, exist_ok=True)
 
 
 def process_single_image(image_path: str, 
-                         segmenter: ImageSegmenter, 
-                         extractor: SkylineExtractor,
-                         visualizer: Visualizer = None,
-                         show_visualization: bool = False) -> np.ndarray | None:
+                        segmenter: ImageSegmenter, 
+                        extractor: SkylineExtractor,
+                        visualizer: Visualizer = None,
+                        show_visualization: bool = False) -> np.ndarray | None:
     """
     Processes a single image: segments sky, extracts skyline.
     Optionally visualizes the steps.
@@ -60,7 +60,7 @@ def process_single_image(image_path: str,
     if skyline_vector is None or skyline_vector.size == 0:
         print(f"Could not extract skyline for {image_path}.")
         if visualizer and show_visualization:
-             visualizer.display_segmentation_results(image_path, sky_mask_np=sky_mask, title_prefix=f"{os.path.basename(image_path)} - ")
+            visualizer.display_segmentation_results(image_path, sky_mask_np=sky_mask, title_prefix=f"{os.path.basename(image_path)} - ")
         return None
 
     print(f"Successfully extracted skyline for {image_path} (length: {len(skyline_vector)})")
@@ -77,12 +77,12 @@ def process_single_image(image_path: str,
 
 
 def populate_database(image_dir: str, 
-                      skyline_db: SkylineDatabase, 
-                      segmenter: ImageSegmenter, 
-                      extractor: SkylineExtractor,
-                      visualizer: Visualizer = None,
-                      show_intermediate_viz: bool = False,
-                      overwrite_existing: bool = False):
+                    skyline_db: SkylineDatabase, 
+                    segmenter: ImageSegmenter, 
+                    extractor: SkylineExtractor,
+                    visualizer: Visualizer = None,
+                    show_intermediate_viz: bool = False,
+                    overwrite_existing: bool = False):
     """
     Processes all images in a directory and adds their skylines to the database.
     """
@@ -120,14 +120,14 @@ def populate_database(image_dir: str,
 
 
 def query_skyline(query_image_path: str,
-                  skyline_db: SkylineDatabase,
-                  segmenter: ImageSegmenter,
-                  extractor: SkylineExtractor,
-                  matcher: SkylineMatcher,
-                  visualizer: Visualizer,
-                  top_n: int = 3,
-                  show_query_viz: bool = True,
-                  show_match_viz: bool = True):
+                    skyline_db: SkylineDatabase,
+                    segmenter: ImageSegmenter,
+                    extractor: SkylineExtractor,
+                    matcher: SkylineMatcher,
+                    visualizer: Visualizer,
+                    top_n: int = 3,
+                    show_query_viz: bool = True,
+                    show_match_viz: bool = True):
     """
     Processes a query image, extracts its skyline, and finds matches in the database.
     """
@@ -186,7 +186,7 @@ if __name__ == "__main__":
         segmenter, 
         extractor, 
         visualizer,
-        show_intermediate_viz=True, 
+        show_intermediate_viz=False, 
         overwrite_existing=False     
     )
 
