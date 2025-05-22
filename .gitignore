@@ -1,8 +1,19 @@
 dataset1/
 
+
+.venv/
+
+__pycache__/
+
+
+Hjalmar/dataset1/
+Hjalmar/sample_images/
+Hjalmar/skyline_db.json
+
 colmap_fisheye_project/
 
 Arvid/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+
