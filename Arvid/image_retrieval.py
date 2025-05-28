@@ -127,8 +127,8 @@ if __name__ == "__main__":
     config.COLMAP_DIR.mkdir(parents=True, exist_ok=True)
     
     # * Change query images here, can be done with function later.
-    query_image_name_cam1 = config.COLMAP_DIR / "images_cam1/cam1_0801.jpg"
-    query_image_name_cam2 = config.DATASET1_DIR / "images_cam2/cam2_0801.jpg"
+    query_image_name_cam1 = "cam1_0802.jpg"
+    query_image_name_cam2 = "cam2_0802.jpg"
 
     # Process Camera 1
     print(f"\n--- Starting processing for Camera 1 ---")
