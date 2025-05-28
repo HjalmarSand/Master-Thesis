@@ -14,29 +14,24 @@ def get_top_matches_for_query(database_path: Path,
     """
     Queries the COLMAP database to find the top N images that match a specific query image,
     based on the number of geometrically verified inlier matches.
-
     Args:
         database_path: Path to the COLMAP SQLite database file.
         camera_name: Name of the camera (for logging).
         query_image_name: The filename of the query image (e.g., "image_001.jpg").
-        top_n: The number of top matches to retrieve for the query image.
-
+        top_n: The number of top pairs to retrieve for the query image.
     Returns:
         A list of tuples, where each tuple is (matched_image_name, num_inliers).
         Returns an empty list if an error occurs, the query image isn't found,
         or no matches are found.
     """
-    print(f"\n[ {camera_name} ] Retrieving top {top_n} matches for query image '{query_image_name}'...")
     conn = None
     try:
         conn = sqlite3.connect(str(database_path))
         cursor = conn.cursor()
 
-        # First, get the image_id of the query image from the 'images' table
         cursor.execute("SELECT image_id FROM images WHERE name = ?", (query_image_name,))
         result = cursor.fetchone()
         if not result:
-            print(f"[ {camera_name} ] Query image '{query_image_name}' not found in the database.")
             return []
         query_image_id = result[0]
 
@@ -64,11 +59,7 @@ def get_top_matches_for_query(database_path: Path,
         top_matches = cursor.fetchall()
 
         if top_matches:
-            print(f"[ {camera_name} ] Top {len(top_matches)} matches for '{query_image_name}':")
-            for i, (matched_img, count) in enumerate(top_matches):
-                print(f"  {i+1}. {query_image_name} <-> {matched_img} : {count} inliers")
-        else:
-            print(f"[ {camera_name} ] No geometrically verified matches found for '{query_image_name}'.")
+            print(f"[ {camera_name} ] Query: {query_image_name} -> Found {len(top_matches)} verified matches. Top one: {top_matches[0][0]} ({top_matches[0][1]} inliers)")
         return top_matches
 
     except sqlite3.Error as e:
@@ -81,9 +72,8 @@ def get_top_matches_for_query(database_path: Path,
 # --- Main Colmap Processing Function ---
 def extract_and_match_image_features(camera_name: str,
                                 image_dir: Path,
-                                base_workspace_dir: Path, # This is config.COLMAP_DIR
+                                base_workspace_dir: Path,
                                 ):
-
     workspace_dir = base_workspace_dir / f"workspace_{camera_name}"
     workspace_dir.mkdir(parents=True, exist_ok=True)
     database_path = workspace_dir / f"database_{camera_name}.db"
@@ -125,15 +115,14 @@ def extract_and_match_image_features(camera_name: str,
 # --- Main Script Logic ---
 if __name__ == "__main__":
     config.COLMAP_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # * Change query images here, can be done with function later.
-    query_image_name_cam1 = "cam1_0802.jpg"
-    query_image_name_cam2 = "cam2_0802.jpg"
 
     # Process Camera 1
     print(f"\n--- Starting processing for Camera 1 ---")
     cam1_image_folder = config.COLMAP_DIR / "images_cam1"
     db_path_cam1 = None
+    images_with_verified_matches_cam1 = []
+    all_top_matches_cam1 = {} 
+
     if cam1_image_folder.is_dir(): 
         db_path_cam1 = extract_and_match_image_features(
             "cam1", 
@@ -141,20 +130,41 @@ if __name__ == "__main__":
             config.COLMAP_DIR
         )
         if db_path_cam1:
-            if query_image_name_cam1: # Ensure a query image name is provided
-                top_matches_cam1 = get_top_matches_for_query(
-                    db_path_cam1,
-                    "cam1",
-                    query_image_name_cam1,
-                    top_n=5
-                )
-                if top_matches_cam1:
-                    print(f"\n[ cam1 ] Retrieved top matches for '{query_image_name_cam1}'.")
+            print(f"\n[ cam1 ] Processing all images from folder '{cam1_image_folder}' for top matches...")
+            
+            input_image_names_cam1 = sorted([
+                f.name for f in cam1_image_folder.iterdir() 
+                if f.is_file()
+            ])
+
+            if not input_image_names_cam1:
+                print(f"[ cam1 ] No image files found in folder {cam1_image_folder}")
+            else:
+                print(f"[ cam1 ] Found {len(input_image_names_cam1)} images in the input folder. Querying each...")
+                for image_filename in input_image_names_cam1:
+                    top_matches = get_top_matches_for_query(
+                        db_path_cam1,
+                        "cam1",
+                        image_filename,
+                        top_n=5
+                    )
+                    if top_matches: 
+                        images_with_verified_matches_cam1.append(image_filename)
+                        all_top_matches_cam1[image_filename] = top_matches 
+                
+                print(f"\n[ cam1 ] Total images with at least one geometrically verified match: {len(images_with_verified_matches_cam1)}")
+                if images_with_verified_matches_cam1:
+                    print(f"[ cam1 ] Images with verified matches: {images_with_verified_matches_cam1}")
+                else:
+                    print(f"[ cam1 ] No images had any geometrically verified matches.")
 
     # Process Camera 2
     print(f"\n--- Starting processing for Camera 2 ---")
-    cam2_image_folder = config.COLMAP_DIR / "images_cam2"
+    cam2_image_folder = config.COLMAP_DIR / "images_cam2" # Source of truth for image names
     db_path_cam2 = None
+    images_with_verified_matches_cam2 = []
+    all_top_matches_cam2 = {} 
+
     if cam2_image_folder.is_dir():
         db_path_cam2 = extract_and_match_image_features(
             "cam2", 
@@ -162,14 +172,32 @@ if __name__ == "__main__":
             config.COLMAP_DIR
         )
         if db_path_cam2:
-            if query_image_name_cam2: # Ensure a query image name is provided
-                top_matches_cam2 = get_top_matches_for_query(
-                    db_path_cam2,
-                    "cam2",
-                    query_image_name_cam2,
-                    top_n=5
-                )
-                if top_matches_cam2:
-                    print(f"\n[ cam2 ] Retrieved top matches for '{query_image_name_cam2}'.")
+            print(f"\n[ cam2 ] Processing all images from folder '{cam2_image_folder}' for top matches...")
+
+            input_image_names_cam2 = sorted([
+                f.name for f in cam2_image_folder.iterdir()
+                if f.is_file()
+            ])
+
+            if not input_image_names_cam2:
+                print(f"[ cam2 ] No image files found in folder {cam2_image_folder}")
+            else:
+                print(f"[ cam2 ] Found {len(input_image_names_cam2)} images in the input folder. Querying each...")
+                for image_filename in input_image_names_cam2:
+                    top_matches = get_top_matches_for_query(
+                        db_path_cam2,
+                        "cam2",
+                        image_filename,
+                        top_n=5
+                    )
+                    if top_matches: 
+                        images_with_verified_matches_cam2.append(image_filename)
+                        all_top_matches_cam2[image_filename] = top_matches
+
+                print(f"\n[ cam2 ] Total images with at least one geometrically verified match: {len(images_with_verified_matches_cam2)}")
+                if images_with_verified_matches_cam2:
+                    print(f"[ cam2 ] Images with verified matches: {images_with_verified_matches_cam2}")
+                else:
+                    print(f"[ cam2 ] No images had any geometrically verified matches.")
     
     print("\n--- Processing complete ---")
