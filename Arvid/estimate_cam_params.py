@@ -1,7 +1,7 @@
 import subprocess
 import shutil
 from pathlib import Path
-import config
+import constants
 
 COLMAP_EXE_PATH = "colmap" # Default to "colmap" command
 
@@ -163,20 +163,20 @@ def estimate_camera_parameters(camera_name: str,
 
 # --- Main Script Logic ---
 if __name__ == "__main__":
-    config.COLMAP_DIR.mkdir(parents=True, exist_ok=True)
+    constants.COLMAP_DIR.mkdir(parents=True, exist_ok=True)
     
     all_estimated_params = {}
 
     # Process Camera 1
     print(f"\n--- Starting processing for Camera 1 ---")
-    cam1_image_folder = config.COLMAP_DIR / "images_cam1"
+    cam1_image_folder = constants.COLMAP_DIR / "images_cam1"
     if cam1_image_folder.is_dir(): 
         params_cam1 = estimate_camera_parameters(
             "cam1", 
             cam1_image_folder, 
-            config.COLMAP_DIR,
-            config.SPLIT_IMG_WIDTH, 
-            config.SPLIT_IMG_HEIGHT
+            constants.COLMAP_DIR,
+            constants.SPLIT_IMG_WIDTH, 
+            constants.SPLIT_IMG_HEIGHT
         )
         if params_cam1:
             all_estimated_params["cam1"] = params_cam1
@@ -185,14 +185,14 @@ if __name__ == "__main__":
 
     # Process Camera 2
     print(f"\n--- Starting processing for Camera 2 ---")
-    cam2_image_folder = config.COLMAP_DIR / "images_cam2"
+    cam2_image_folder = constants.COLMAP_DIR / "images_cam2"
     if cam2_image_folder.is_dir():
         params_cam2 = estimate_camera_parameters(
             "cam2", 
             cam2_image_folder, 
-            config.COLMAP_DIR,
-            config.SPLIT_IMG_WIDTH, 
-            config.SPLIT_IMG_HEIGHT
+            constants.COLMAP_DIR,
+            constants.SPLIT_IMG_WIDTH, 
+            constants.SPLIT_IMG_HEIGHT
         )
         if params_cam2:
             all_estimated_params["cam2"] = params_cam2
@@ -222,8 +222,8 @@ if __name__ == "__main__":
         else:
             print("  Parameters not estimated or estimation failed.")
 
-    print_camera_summary("cam1", all_estimated_params.get("cam1"), config.SPLIT_IMG_WIDTH, config.SPLIT_IMG_HEIGHT, config.COLMAP_DIR)
-    print_camera_summary("cam2", all_estimated_params.get("cam2"), config.SPLIT_IMG_WIDTH, config.SPLIT_IMG_HEIGHT, config.COLMAP_DIR)
+    print_camera_summary("cam1", all_estimated_params.get("cam1"), constants.SPLIT_IMG_WIDTH, constants.SPLIT_IMG_HEIGHT, constants.COLMAP_DIR)
+    print_camera_summary("cam2", all_estimated_params.get("cam2"), constants.SPLIT_IMG_WIDTH, constants.SPLIT_IMG_HEIGHT, constants.COLMAP_DIR)
 
     if not all_estimated_params or (not all_estimated_params.get("cam1") and not all_estimated_params.get("cam2")):
         print("\nNo parameters were successfully estimated for any camera, or all failed.")

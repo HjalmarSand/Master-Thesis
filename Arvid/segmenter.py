@@ -6,7 +6,7 @@ from transformers import SegformerImageProcessor, SegformerForSemanticSegmentati
 import matplotlib.pyplot as plt
 import numpy as np
 
-import config
+import constants
 
 def load_model_and_processor(model_name="nvidia/segformer-b0-finetuned-ade-512-512", device="cpu"):
     """Loads the SegFormer model and its processor."""

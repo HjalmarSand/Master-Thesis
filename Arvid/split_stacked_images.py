@@ -1,7 +1,7 @@
 import cv2
 import os
 import glob
-import config
+import constants
 from utility import get_image_dimensions_opencv
 
 images_in_dataset = glob.glob(os.path.join(config.DATASET1_DIR, "*.jpg"))
@@ -18,11 +18,8 @@ height_cam1 = stacked_height // 2
 print(f"Calculated output dimensions for cam1 images: {width}x{height_cam1}")
 print(f"Calculated output dimensions for cam2 images: {width}x{stacked_height - height_cam1}")
 
-cam1_folder = os.path.join(config.COLMAP_DIR, "images_cam1")
-cam2_folder = os.path.join(config.COLMAP_DIR, "images_cam2")
-
-os.makedirs(cam1_folder, exist_ok=True)
-os.makedirs(cam2_folder, exist_ok=True)
+os.makedirs(constants.CAM1_FOLDER, exist_ok=True)
+os.makedirs(constants.CAM2_FOLDER, exist_ok=True)
 
 for path in images_in_dataset:
     base_filename = os.path.basename(path)
@@ -39,12 +36,12 @@ for path in images_in_dataset:
     # Starts from where cam1 ended and goes to the full stacked_height
     img_cam2 = composite_img[height_cam1:stacked_height, 0:width]
 
-    output_filename_cam1 = os.path.join(cam1_folder, f"cam1_{base_filename}")
-    output_filename_cam2 = os.path.join(cam2_folder, f"cam2_{base_filename}")
+    output_filename_cam1 = os.path.join(constants.CAM1_FOLDER, f"cam1_{base_filename}")
+    output_filename_cam2 = os.path.join(constants.CAM2_FOLDER, f"cam2_{base_filename}")
 
     cv2.imwrite(output_filename_cam1, img_cam1)
     cv2.imwrite(output_filename_cam2, img_cam2)
 
 print("--- Image splitting complete. ---")
-print(f"Images for cam1 saved to: {cam1_folder}")
-print(f"Images for cam2 saved to: {cam2_folder}")
+print(f"Images for cam1 saved to: {constants.CAM1_FOLDER}")
+print(f"Images for cam2 saved to: {constants.CAM2_FOLDER}")
