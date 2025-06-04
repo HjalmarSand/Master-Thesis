@@ -30,7 +30,8 @@ class Visualizer:
         
         current_ax_idx = 0
 
-        # Load Original Image
+        # --- Load Original Image ---
+        # (Keep your existing image loading logic here)
         if isinstance(image_source, str):
             try:
                 original_image_pil = Image.open(image_source).convert("RGB")

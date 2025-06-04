@@ -61,8 +61,8 @@ def split_images_in_folder(input_folder, output_folder):
     print(f"Split images saved in: {output_folder}")
 
 if __name__ == "__main__":
-    INPUT_IMAGE_FOLDER = "Hjalmar/dataset1/images"
-    OUTPUT_IMAGE_FOLDER = "Hjalmar/dataset1/split_images"
+    INPUT_IMAGE_FOLDER = "dataset1/images"
+    OUTPUT_IMAGE_FOLDER = "dataset1/split_images"
 
     if not os.path.isdir(INPUT_IMAGE_FOLDER):
         print(f"Error: Input folder '{INPUT_IMAGE_FOLDER}' does not exist.")

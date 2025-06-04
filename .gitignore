@@ -6,11 +6,13 @@ dataset1/
 Hjalmar/__pycache__/
 
 
-Hjalmar/dataset1/
-Hjalmar/skyline/skyline_db.json
-Hjalmar/SAM/
 Hjalmar/image_database_magaloc.pkl
 dino_salad.ckpt
+Hjalmar/__pycache__/
+__pycache__/
+
+
+Hjalmar/skyline_db.json
 
 colmap_fisheye_project/
 
