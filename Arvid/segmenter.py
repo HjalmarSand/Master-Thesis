@@ -6,7 +6,7 @@ from transformers import SegformerImageProcessor, SegformerForSemanticSegmentati
 import matplotlib.pyplot as plt
 import numpy as np
 
-import config
+import constants
 
 def load_model_and_processor(model_name="nvidia/segformer-b0-finetuned-ade-512-512", device="cpu"):
     """Loads the SegFormer model and its processor."""
@@ -97,7 +97,7 @@ def segment_sky(image_path, processor, model, device):
     return image, predicted_semantic_map, sky_mask
 
 if __name__ == "__main__":
-    IMAGE_PATH = os.path.join(config.COLMAP_DIR, "images_cam1/cam1_0801.jpg")
+    IMAGE_PATH = os.path.join(constants.COLMAP_DIR, "images_cam1/cam1_0801.jpg")
 
     MODEL_NAME = "nvidia/segformer-b0-finetuned-ade-512-512" 
 

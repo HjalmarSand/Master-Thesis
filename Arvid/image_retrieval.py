@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 import sqlite3
-import config
+import constants
 
 COLMAP_EXE_PATH = "colmap"
 COLMAP_PAIR_ID_DECODING_CONSTANT = 2147483647
@@ -152,6 +152,7 @@ def extract_and_match_image_features(dataset_name: str,
         COLMAP_EXE_PATH, "exhaustive_matcher",
         "--database_path", str(database_path),
         "--SiftMatching.use_gpu", "0", # ? Change this later if on home pc. 1 for gpu
+        "--SiftMatching.num_threads", "1"
     ]
     try:
         subprocess.run(cmd_feature_matching, check=True, capture_output=True, text=True)
