@@ -1,31 +1,12 @@
-dataset1/
-
-
-.venv/
-
-<<<<<<< HEAD
 __pycache__/
-
-
-Hjalmar/dataset1/
-Hjalmar/sample_images/
-=======
-Hjalmar/__pycache__/
-
-
-Hjalmar/image_database_magaloc.pkl
-dino_salad.ckpt
-Hjalmar/__pycache__/
-__pycache__/
-
-
->>>>>>> devHS_fresh
-Hjalmar/skyline_db.json
-
-colmap_fisheye_project/
-
-Arvid/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+.venv/
+
+dino_salad.ckpt
+
+colmap_fisheye_project/
+
+images/
