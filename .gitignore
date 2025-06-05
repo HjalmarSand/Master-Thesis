@@ -9,4 +9,13 @@ dino_salad.ckpt
 
 colmap_fisheye_project/
 
-images/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.webp
+*.heic
+*.heif
