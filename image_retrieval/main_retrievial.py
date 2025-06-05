@@ -8,6 +8,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import argparse
 
+# TODO: Change this file so that it calls upon the creation of the MegaLoc database.
+
 DATABASE_FILE = "Hjalmar/image_database_megaloc.pkl"
 TOP_K_RESULTS = 5
 MEGALOC_INPUT_IMAGE_SIZE = (480, 640)

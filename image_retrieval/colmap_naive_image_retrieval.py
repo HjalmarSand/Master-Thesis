@@ -1,3 +1,9 @@
+# Image retrieval using colmap that internally uses sift then ann matcher, then geometric verification to find top matches.
+# See publication below detailing the methods. This file uses the naive matcher so far, and is infeasible for large datasets,
+# but can be used as a baseline that we later compare with speeding up lookup with BoW, probably with MegaLoc that seems promising
+# in its description. 
+# https://www.researchgate.net/publication/301197096_Structure-from-Motion_Revisited
+
 import subprocess
 from pathlib import Path
 import sqlite3
