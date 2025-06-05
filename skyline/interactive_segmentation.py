@@ -1,5 +1,8 @@
 # interactive_inspector.py
 import matplotlib
+
+import constants
+
 try:
     matplotlib.use('TkAgg')
 except ImportError:
@@ -10,13 +13,12 @@ import matplotlib.colors as mcolors
 import numpy as np
 import os
 from PIL import Image 
-from Hjalmar.skyline.image_segmenter import ImageSegmenter 
+from image_segmenter import ImageSegmenter 
 
 SEGMENTATION_MODEL_NAME = "nvidia/segformer-b0-finetuned-ade-512-512"
 DEFAULT_SKY_LABEL = "sky"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-IMAGE_TO_INSPECT = os.path.join(BASE_DIR, "dataset1","split_images", "0802_back.jpg") 
+IMAGE_TO_INSPECT = os.path.join(constants.CAM1_UNDISTORTED_FOLDER, "cam1_0801.jpg") 
 
 class InteractiveSegmentationViewer:
     def __init__(self, image_pil, class_id_map, id2label_map):

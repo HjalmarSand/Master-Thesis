@@ -7,10 +7,10 @@ from PIL import Image
 import numpy as np
 
 try:
-    from Hjalmar.skyline.image_segmenter import ImageSegmenter
-    from Hjalmar.skyline.skyline_extractor import SkylineExtractor
-    from Hjalmar.skyline.skyline_database import SkylineDatabase
-    from Hjalmar.skyline.skyline_matcher import SkylineMatcher
+    from image_segmenter import ImageSegmenter
+    from skyline_extractor import SkylineExtractor
+    from skyline_database import SkylineDatabase
+    from skyline_matcher import SkylineMatcher
     from visualizer import Visualizer
 except ImportError as e:
     print(f"Error importing modules: {e}")

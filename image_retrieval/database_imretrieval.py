@@ -8,7 +8,10 @@ import torchvision.transforms as T
 import pickle
 import numpy as np
 
-DATABASE_IMAGE_DIR = "Hjalmar/dataset1/split_images"
+import constants
+
+# TODO: Fix paths now that we use separate folders for front and back images. Also move paths to constants.py
+
 GPS_CSV_PATH = "Hjalmar/dataset1/gps_interpolated_with_orientation.csv"
 DATABASE_OUTPUT_FILE = "image_database_megaloc.pkl"
 MEGALOC_INPUT_IMAGE_SIZE = (480, 640) 
@@ -69,9 +72,9 @@ def main():
     database_entries = []
     print("Processing database images and extracting MegaLoc features...")
 
-    db_image_paths = glob.glob(os.path.join(DATABASE_IMAGE_DIR, "*.jpg"))
+    db_image_paths = glob.glob(os.path.join(constants.CAM1_DISTORTED_FOLDER, "*.jpg"))
     if not db_image_paths:
-        print(f"Error: No JPG images found in {DATABASE_IMAGE_DIR}"); return
+        print(f"Error: No JPG images found in {constants.CAM1_DISTORTED_FOLDER}"); return
 
     for i, img_path in enumerate(db_image_paths):
         print(f"Processing image {i+1}/{len(db_image_paths)}: {os.path.basename(img_path)}")

@@ -225,11 +225,11 @@ def process_dataset_and_find_matches(dataset_name: str,
 
 # --- Main Script Logic ---
 if __name__ == "__main__":
-    if not hasattr(config, 'COLMAP_DIR') or not isinstance(config.COLMAP_DIR, Path):
-        print("Error: config.py must define COLMAP_DIR as a pathlib.Path pointing to your project root.")
+    if not hasattr(constants, 'COLMAP_DIR') or not isinstance(constants.COLMAP_DIR, Path):
+        print("Error: constants.py must define COLMAP_DIR as a pathlib.Path pointing to your project root.")
         exit(1)
         
-    colmap_project_root = config.COLMAP_DIR
+    colmap_project_root = constants.COLMAP_DIR
     colmap_project_root.mkdir(parents=True, exist_ok=True)
 
     # --- Process Camera 1 ---

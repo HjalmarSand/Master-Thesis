@@ -24,11 +24,6 @@ class Visualizer:
             plots_info.append("skyline")
 
         num_plots = len(plots_info)
-<<<<<<< HEAD
-        if num_plots == 0: # Should not happen due to "original" always being there
-            return 
-=======
->>>>>>> devHS_fresh
 
         fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5), squeeze=False) # squeeze=False ensures axes is always 2D
         axes = axes.flatten() # Flatten to 1D array for easy indexing
@@ -62,24 +57,14 @@ class Visualizer:
             current_ax_idx += 1
         
         if "mask" in plots_info:
-<<<<<<< HEAD
-            if sky_mask_np is not None: # Double check, though it should be if "mask" is in plots_info
-=======
             if sky_mask_np is not None: 
->>>>>>> devHS_fresh
                 axes[current_ax_idx].imshow(sky_mask_np * 255, cmap='gray')
                 axes[current_ax_idx].set_title(f"{title_prefix}Sky Mask")
                 axes[current_ax_idx].axis('off')
                 current_ax_idx += 1
-<<<<<<< HEAD
-            else: # Should not happen if logic is correct, but good for robustness
-                print("Warning: 'mask' in plots_info but sky_mask_np is None.")
-                if current_ax_idx < len(axes): # Remove the unused axis slot if pre-allocated
-=======
             else: # Should not happen
                 print("Warning: 'mask' in plots_info but sky_mask_np is None.")
                 if current_ax_idx < len(axes): 
->>>>>>> devHS_fresh
                     fig.delaxes(axes[current_ax_idx])
 
 
@@ -89,10 +74,6 @@ class Visualizer:
                 
                 axes[current_ax_idx].imshow(overlay_image) # Show image first
                 
-<<<<<<< HEAD
-                # Overlay the skyline points/line
-=======
->>>>>>> devHS_fresh
                 x_coords = np.arange(len(skyline_vector))
                 
                 # Filter points that are within image bounds before plotting

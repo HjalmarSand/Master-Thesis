@@ -2,11 +2,11 @@ import cv2
 import os
 import glob
 import constants
-from utility import get_image_dimensions_opencv
+from utils.utility import get_image_dimensions_opencv
 
-images_in_dataset = glob.glob(os.path.join(config.DATASET1_DIR, "*.jpg"))
+images_in_dataset = glob.glob(os.path.join(constants.DATASET1_DIR, "*.jpg"))
 if not images_in_dataset:
-    print(f"Error: No JPG image files found in {config.DATASET1_DIR} to determine dimensions.")
+    print(f"Error: No JPG image files found in {constants.DATASET1_DIR} to determine dimensions.")
     exit()
 image_path_for_dimensions = images_in_dataset[0] # Take the first one found
 
