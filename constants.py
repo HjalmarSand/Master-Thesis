@@ -4,13 +4,8 @@ from pathlib import Path
 PROJECT_ROOT_OF_SCRIPTS = Path(__file__).resolve().parent
 
 # --- Data Directories ---
-<<<<<<< HEAD
-DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS.parent / "images/dataset1/images"
-DATASET1_CSV = PROJECT_ROOT_OF_SCRIPTS.parent / "images/gps_interpolated_with_orientation.csv"
-=======
 DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS / "images/dataset1/images"
-DATASET1_CSV = PROJECT_ROOT_OF_SCRIPTS / "images/dataset1/gps_interpolated_with_orientation.csv"
->>>>>>> ee00199f649a4304b1d5fb64dbb4d7f6e4386d03
+DATASET1_CSV = PROJECT_ROOT_OF_SCRIPTS / "images/gps_interpolated_with_orientation.csv"
 
 COLMAP_DIR = PROJECT_ROOT_OF_SCRIPTS / "colmap_fisheye_project"
 
