@@ -1,15 +1,11 @@
 from pathlib import Path
 
 # --- Project Root Directory ---
-PROJECT_ROOT_OF_SCRIPTS = Path(__file__).resolve()
+PROJECT_ROOT_OF_SCRIPTS = Path(__file__).resolve().parent
 
 # --- Data Directories ---
-<<<<<<< HEAD
-DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS.parent / "images/dataset1/images"
-DATASET1_CSV = PROJECT_ROOT_OF_SCRIPTS.parent / "images/dataset1/gps_interpolated.csv"
-=======
-DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS / "images" / "dataset1" / "images"
->>>>>>> arvid_dev
+DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS / "images/dataset1/images"
+DATASET1_CSV = PROJECT_ROOT_OF_SCRIPTS / "images/dataset1/gps_interpolated_with_orientation.csv"
 
 COLMAP_DIR = PROJECT_ROOT_OF_SCRIPTS / "colmap_fisheye_project"
 

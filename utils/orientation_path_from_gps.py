@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt 
 import os 
+import constants
 
 def calculate_orientation(df, easting_col='easting', northing_col='northing'):
     """
@@ -70,7 +71,7 @@ def plot_trajectory(df, easting_col='easting', northing_col='northing', title_su
 
 if __name__ == "__main__":
     BASE_PATH = "." 
-    RELATIVE_PATH_TO_CSV = "Hjalmar/dataset1/gps_interpolated.csv"
+    RELATIVE_PATH_TO_CSV = constants.DATASET1_CSV
     INPUT_CSV_FILE = os.path.join(BASE_PATH, RELATIVE_PATH_TO_CSV)
     input_dir = os.path.dirname(INPUT_CSV_FILE)
     input_filename_base = os.path.splitext(os.path.basename(INPUT_CSV_FILE))[0]
