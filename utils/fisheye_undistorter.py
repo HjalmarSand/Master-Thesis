@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import os
 import math
 
+# TODO: Instead of creating one undistorted image, use the information from both cameras to create 4 90-degree views.
+
 class FisheyeUndistorter:
     def __init__(self, csv_path=None, csv_data=None):
         if csv_path is None and csv_data is None:
@@ -17,7 +19,6 @@ class FisheyeUndistorter:
             'sensor': 'IMX219',
             'native_resolution': (3280, 2464),
             'input_image_resolution': (1280, 720),
-            'cmos_size_diagonal_inch': 1/4,
             'focal_length_mm': 0.87,
             'diagonal_fov_degrees': 200
         }
