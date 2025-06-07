@@ -2,10 +2,11 @@ from pathlib import Path
 import os
 
 # --- Project Root Directory ---
-PROJECT_ROOT_OF_SCRIPTS = Path(__file__).resolve().parent
+PROJECT_ROOT_OF_SCRIPTS = Path(__file__).resolve()
 
 # --- Data Directories ---
 DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS.parent / "images/dataset1/images"
+DATASET1_CSV = PROJECT_ROOT_OF_SCRIPTS.parent / "images/dataset1/gps_interpolated.csv"
 
 COLMAP_DIR = PROJECT_ROOT_OF_SCRIPTS.parent / "colmap_fisheye_project"
 
