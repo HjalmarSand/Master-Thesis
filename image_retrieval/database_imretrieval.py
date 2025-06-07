@@ -24,7 +24,7 @@ class MegaLocDatabaseCreator:
             database_output_file: Output database filename
             input_image_size: MegaLoc input image size
         """
-        self.gps_csv_path = gps_csv_path or constants.DATASET1_CSV
+        self.gps_csv_path = gps_csv_path or constants.DATASET1_CSV_ORIENTATION
         self.database_output_file = database_output_file
         self.input_image_size = input_image_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -107,7 +107,7 @@ class MegaLocDatabaseCreator:
                 print(f"Processing {camera_name} image {i+1}/{len(db_image_paths)}")
             
             base_filename_parts = os.path.basename(img_path).split('_')
-            original_base_name = base_filename_parts[0] + ".jpg" if len(base_filename_parts) > 0 else os.path.basename(img_path)
+            original_base_name = base_filename_parts[1] if len(base_filename_parts) > 0 else os.path.basename(img_path)
             
             if original_base_name in self.gps_df.index:
                 gps_data = self.gps_df.loc[original_base_name]
