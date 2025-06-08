@@ -34,4 +34,4 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 PLOTS_DIR = OUTPUT_DIR / "plots"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
-MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl""
+MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl"

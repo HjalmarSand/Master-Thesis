@@ -1,4 +1,4 @@
-# database_imretrieval.py - Class-based database creation with MegaLoc
+# create_megaloc.py - Class-based database creation with MegaLoc
 import os
 import glob
 import pandas as pd
