@@ -19,3 +19,4 @@ colmap_fisheye_project/
 *.webp
 *.heic
 *.heif
+*.pkl

@@ -9,6 +9,7 @@ IMAGES_DIR = PROJECT_ROOT / "images"
 
 # Dataset directory containing the original stacked images
 DATASET1_DIR = IMAGES_DIR / "dataset1" / "images"
+DATASET1_CSV = IMAGES_DIR / "gps_interpolated_with_orientation.csv"
 
 # COLMAP directory
 COLMAP_DIR = PROJECT_ROOT / "colmap_fisheye_project"
@@ -32,3 +33,5 @@ DISTORTION_PARAMS_CSV = PROJECT_ROOT / "distortion_parameters.csv"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 PLOTS_DIR = OUTPUT_DIR / "plots"
 LOGS_DIR = OUTPUT_DIR / "logs"
+
+MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl""
