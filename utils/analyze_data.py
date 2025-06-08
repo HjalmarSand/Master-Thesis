@@ -4,6 +4,10 @@ import matplotlib.pyplot as plt
 import math
 import os
 import constants
+import glob 
+import re
+
+
 GPS_CSV_PATH = constants.DATASET1_CSV  
 OUTPUT_DIR = "trajectory_analysis_output" # where to save plots
 
@@ -155,5 +159,83 @@ def analyze_trajectory(csv_path):
 
     print("\nAnalysis complete. Plots saved in", OUTPUT_DIR)
 
+def analyze_and_plot_results(directory="."):
+    """
+    Finds all 'output*.csv' files, calculates adjusted average error,
+    and plots the results.
+    """
+
+    ERROR_ADJUSTMENT = 9.30 # Average length between two GPS points in the dataset
+    CSV_FILE_PATTERN = "output*.csv"  # Pattern to match relevant CSV files
+
+    # Discover all relevant CSV files in the specified directory.
+    search_path = os.path.join(directory, CSV_FILE_PATTERN)
+    csv_files = glob.glob(search_path)
+
+    if not csv_files:
+        print(f"Error: No files found matching the pattern '{CSV_FILE_PATTERN}' in this directory.")
+        return
+
+    print(f"Found {len(csv_files)} result files to analyze.")
+    
+    plot_data = []
+
+    # Process each file to extract radius and calculate adjusted error.
+    for filepath in csv_files:
+        filename = os.path.basename(filepath)
+        
+        # Use a regular expression to reliably extract the numeric radius from the filename.
+        match = re.search(r'output(\d+)\.csv', filename)
+        if not match:
+            print(f"Warning: Skipping file with unexpected name format: {filename}")
+            continue
+            
+        radius = int(match.group(1))
+        
+        try:
+            df = pd.read_csv(filepath)
+            
+            # Calculate the average error
+            average_error = df['distance_meters'].mean()
+            
+            # Since the average error doesnt take the radius exclusion into account, we adjust the average error.
+            adjusted_average_error = average_error - ERROR_ADJUSTMENT * (radius + 1) 
+            
+            plot_data.append({
+                'radius': radius,
+                'adjusted_error': adjusted_average_error
+            })
+            
+            print(f"  - Processed {filename}: Radius={radius}, Adjusted Avg Error={adjusted_average_error:.2f}m")
+
+        except pd.errors.EmptyDataError:
+            print(f"Warning: The file {filename} is empty. Skipping.")
+        except Exception as e:
+            print(f"An error occurred while processing {filename}: {e}")
+
+    if not plot_data:
+        print("No data could be processed for plotting.")
+        return
+
+    # Sort the data by radius to ensure the plot is drawn in a logical order.
+    plot_data.sort(key=lambda item: item['radius'])
+
+    y_values = [item['adjusted_error'] for item in plot_data]
+    x_values = [item['radius'] * 9.30 for item in plot_data]
+
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    ax.plot(x_values, y_values, marker='o', linestyle='-', color='b', label='Adjusted Avg. Error')
+
+    ax.set_ylabel(" Error (m)", fontsize=12)
+    ax.set_xlabel("Exclusion radius", fontsize=12)
+    ax.set_title("Impact of Exclusion Radius on Localization Error", fontsize=16, weight='bold')
+    ax.legend()
+    plt.tight_layout()
+    print("Displaying plot...")
+    plt.show()
+
 if __name__ == "__main__":
-    analyze_trajectory(GPS_CSV_PATH)
+    #analyze_trajectory(GPS_CSV_PATH)
+    analyze_and_plot_results(directory="results")
