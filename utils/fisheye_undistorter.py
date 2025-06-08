@@ -7,18 +7,23 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 import math
+from pathlib import Path
 
-# TODO: Instead of creating one undistorted image, use the information from both cameras to create 4 90-degree views.
+import constants
 
 class FisheyeUndistorter:
     def __init__(self, csv_path=None, csv_data=None):
+        if csv_path is None and csv_data is None:
+            # Use default CSV path from constants
+            csv_path = constants.DISTORTION_PARAMS_CSV
+            
         if csv_path is None and csv_data is None:
             raise ValueError("Either csv_path or csv_data must be provided.")
         
         self.camera_specs = {
             'sensor': 'IMX219',
             'native_resolution': (3280, 2464),
-            'input_image_resolution': (1280, 720),
+            'input_image_resolution': (constants.SPLIT_IMG_WIDTH, constants.SPLIT_IMG_HEIGHT),
             'focal_length_mm': 0.87,
             'diagonal_fov_degrees': 200
         }
@@ -26,6 +31,7 @@ class FisheyeUndistorter:
         self._calculate_derived_parameters()
 
         if csv_path is not None:
+            csv_path = Path(csv_path)  # Ensure it's a Path object
             try:
                 self.distortion_data_df = pd.read_csv(csv_path)
                 print(f"Loaded distortion data from: {csv_path}")
@@ -140,6 +146,7 @@ class FisheyeUndistorter:
         return undistorted_rectilinear_image
 
     def process_image_file(self, input_path, output_path=None, **kwargs):
+        input_path = Path(input_path)
         image = cv2.imread(str(input_path))
         if image is None:
             raise ValueError(f"Could not load image from {input_path}")
@@ -147,28 +154,45 @@ class FisheyeUndistorter:
         undistorted = self.undistort_image(image, **kwargs)
         
         if output_path:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(output_path), undistorted)
             print(f"Undistorted image saved to: {output_path}")
         
         return image, undistorted
     
     def batch_process(self, input_folder, output_folder, **kwargs):
-        os.makedirs(output_folder, exist_ok=True)
+        input_folder = Path(input_folder)
+        output_folder = Path(output_folder)
+        output_folder.mkdir(parents=True, exist_ok=True)
+        
         extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
         
-        for filename in os.listdir(input_folder):
-            if any(filename.lower().endswith(ext) for ext in extensions):
-                input_path = os.path.join(input_folder, filename)
-                output_file_name = f"undistorted_{os.path.splitext(filename)[0]}.png"
-                output_path = os.path.join(output_folder, output_file_name)
+        processed = 0
+        for file_path in input_folder.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in extensions:
+                output_file_name = f"undistorted_{file_path.stem}.png"
+                output_path = output_folder / output_file_name
                 
                 try:
-                    print(f"Processing {input_path}...")
-                    self.process_image_file(input_path, output_path, **kwargs)
+                    print(f"Processing {file_path}...")
+                    self.process_image_file(file_path, output_path, **kwargs)
+                    processed += 1
                 except Exception as e:
-                    print(f"Error processing {filename}: {e}")
+                    print(f"Error processing {file_path.name}: {e}")
+        
+        print(f"Batch processing complete. Processed {processed} images.")
+        return processed
 
-    def visualize_lut_mapping(self, save_path="lut_mapping_analysis.png"):
+    def visualize_lut_mapping(self, save_path=None):
+        if save_path is None:
+            save_path = constants.PLOTS_DIR / "lut_mapping_analysis.png"
+        else:
+            save_path = Path(save_path)
+        
+        # Ensure the directory exists
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+            
         plt.figure(figsize=(8, 6))
         plt.plot(self.lut_y_a_deg, self.lut_real_height_mm, 'b-', label='LUT: Angle to Distorted Radius (mm)')
         plt.xlabel('Incoming Angle (y_a degrees)')
@@ -181,27 +205,18 @@ class FisheyeUndistorter:
         plt.close()
         print(f"LUT mapping analysis plot saved to: {save_path}")
 
-    def suggest_fov_for_fill_factor(self, desired_fill_factor=0.8):
-        """
-        Suggests an output FOV that will fill approximately the desired fraction of the output image.
-        desired_fill_factor: 0.0 to 1.0, where 1.0 means fill the entire output
-        """
-        max_input_radius = min(self.cx_input, self.cy_input, 
-                            self.camera_specs['input_image_resolution'][0] - self.cx_input,
-                            self.camera_specs['input_image_resolution'][1] - self.cy_input)
-        
-        max_angle_deg = self.lut_y_a_deg[-1]
-        
-        suggested_fov = max_angle_deg * 2 * desired_fill_factor
-        suggested_fov = min(suggested_fov, 170)
-        
-        print(f"Suggested FOV for {desired_fill_factor*100}% fill: {suggested_fov:.1f}°")
-        return suggested_fov
-
-    def save_comparison_plot(self, original, undistorted, save_path="comparison.png"):
+    def save_comparison_plot(self, original, undistorted, save_path=None):
         if original is None or undistorted is None:
             print("Cannot save comparison plot: One or both images are None.")
             return
+
+        if save_path is None:
+            save_path = constants.PLOTS_DIR / "comparison.png"
+        else:
+            save_path = Path(save_path)
+        
+        # Ensure the directory exists
+        save_path.parent.mkdir(parents=True, exist_ok=True)
 
         plt.figure(figsize=(15, 7))
         
@@ -222,62 +237,62 @@ class FisheyeUndistorter:
 
 
 def main():
-    csv_file_path = "Arvid/distortion_parameters.csv" 
+    """Main function to run fisheye undistortion on cam1 and cam2 images."""
+    print("Starting fisheye undistortion process...")
     
+    # Initialize undistorter
     try:
-        import constants
-        input_image_path_single = os.path.join(constants.CAM1_FOLDER, "cam1_0801.jpg")
-    except (ImportError, AttributeError):
-        print("Warning: 'constants' module or 'CAM1_FOLDER' not found. Please set 'input_image_path_single' manually.")
-        input_image_path_single = "test_fisheye.jpg"
-        if not os.path.exists(input_image_path_single):
-            print(f"Creating dummy test image at {input_image_path_single}")
-            dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
-            cv2.putText(dummy_img, "Test Fisheye", (50, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (255,255,255), 3)
-            cv2.imwrite(input_image_path_single, dummy_img)
-
-    output_image_path_single = "undistorted_output_image.png"
-    
-    output_w = 1280
-    output_h = 720
-    output_fov = 90  # Reduced from 120 to 90 for more zoom
-
-    if not os.path.exists(csv_file_path):
-        print(f"Error: CSV file not found: {csv_file_path}")
-        print(f"Current working directory: {os.getcwd()}")
-        if os.path.exists(os.path.join("..", csv_file_path)):
-            csv_file_path = os.path.join("..", csv_file_path)
-            print(f"Found CSV at: {csv_file_path}")
-        else:
-            print("Please ensure the CSV path is correct.")
-            exit(1)
-            
-    try:
-        undistorter = FisheyeUndistorter(csv_path=csv_file_path)
+        undistorter = FisheyeUndistorter()
     except Exception as e:
         print(f"Error initializing FisheyeUndistorter: {e}")
-        exit(1)
-
-    undistorter.visualize_lut_mapping("lut_mapping_analysis.png")
+        return 1
     
-    if os.path.exists(input_image_path_single):
-        print(f"\nProcessing single image: {input_image_path_single}")
+    # Create visualization
+    undistorter.visualize_lut_mapping()
+    
+    # Process cam1 images
+    if constants.CAM1_DISTORTED_FOLDER.exists():
+        print(f"\nProcessing cam1 images from: {constants.CAM1_DISTORTED_FOLDER}")
+        processed = undistorter.batch_process(
+            constants.CAM1_DISTORTED_FOLDER,
+            constants.CAM1_UNDISTORTED_FOLDER,
+            output_rectilinear_fov_degrees=90
+        )
+        print(f"Processed {processed} cam1 images")
+    else:
+        print(f"Warning: cam1 distorted folder not found: {constants.CAM1_DISTORTED_FOLDER}")
+    
+    # Process cam2 images
+    if constants.CAM2_DISTORTED_FOLDER.exists():
+        print(f"\nProcessing cam2 images from: {constants.CAM2_DISTORTED_FOLDER}")
+        processed = undistorter.batch_process(
+            constants.CAM2_DISTORTED_FOLDER,
+            constants.CAM2_UNDISTORTED_FOLDER,
+            output_rectilinear_fov_degrees=90
+        )
+        print(f"Processed {processed} cam2 images")
+    else:
+        print(f"Warning: cam2 distorted folder not found: {constants.CAM2_DISTORTED_FOLDER}")
+    
+    # Process a single example if available
+    example_images = list(constants.CAM1_DISTORTED_FOLDER.glob("*.jpg"))
+    if example_images:
+        print(f"\nProcessing example image for comparison plot...")
+        example_path = example_images[0]
         try:
             original_img, undistorted_img = undistorter.process_image_file(
-                input_image_path_single, 
-                output_image_path_single,
-                output_width=output_w,
-                output_height=output_h,
-                output_rectilinear_fov_degrees=output_fov
+                example_path,
+                output_width=constants.SPLIT_IMG_WIDTH,
+                output_height=constants.SPLIT_IMG_HEIGHT,
+                output_rectilinear_fov_degrees=90
             )
-            undistorter.save_comparison_plot(original_img, undistorted_img, "single_image_comparison.png")
-            print(f"Single image processing complete. Output: {output_image_path_single}")
+            undistorter.save_comparison_plot(original_img, undistorted_img)
         except Exception as e:
-            print(f"Error processing single image {input_image_path_single}: {e}")
-    else:
-        print(f"Single input image not found: {input_image_path_single}. Skipping single image test.")
+            print(f"Error creating comparison plot: {e}")
+    
+    print("\nFisheye undistortion complete!")
+    return 0
 
-    print("\nScript finished.")
 
 if __name__ == "__main__":
-    main()
+    exit(main())

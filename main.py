@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from utils import split_stacked_images 
-from utils import fisheye_undistorter 
+from utils.fisheye_undistorter import main as fisheye_undistorter_main
 from utils import orientation_path_from_gps
 
 
@@ -36,7 +36,7 @@ def run_image_splitting():
         # Run the image splitting process
         exit_code = split_stacked_images.main()
         
-        if exit_code == 0:
+        if exit_code == 0 or exit_code is None:  # Handle None return
             print("Image splitting completed successfully!")
             return True
         else:
@@ -57,7 +57,7 @@ def run_fisheye_undistortion():
     
     try:
         # Run the fisheye undistortion process
-        exit_code = fisheye_undistorter.main()
+        exit_code = fisheye_undistorter_main()
         
         if exit_code == 0:
             print("Fisheye undistortion completed successfully!")
@@ -128,16 +128,18 @@ def main():
     total_stages = len(pipeline_stages)
     
     # Execute pipeline stages
-    for stage_name, stage_function in pipeline_stages:
+    for i, (stage_name, stage_function) in enumerate(pipeline_stages):
         try:
             success = stage_function()
-            if not success:
+            if success:
+                successful_stages += 1
+            else:
                 print(f"{stage_name} failed")
                 print("Pipeline stopped due to failure")
                 break
                 
         except KeyboardInterrupt:
-            print(f"\n Pipeline interrupted by user during {stage_name}")
+            print(f"\nPipeline interrupted by user during {stage_name}")
             sys.exit(1)
         except Exception as e:
             print(f"Unexpected error in {stage_name}: {e}")
