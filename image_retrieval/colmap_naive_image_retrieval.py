@@ -1,4 +1,9 @@
-# Image retrieval using colmap that internally uses sift then ann matcher, then geometric verification to find top matches.
+# ! This code does not always run well on my laptop. When performing feature matching it sometimes crashes during it at some stage.
+# It has worked to limit the number of threads, but not reliably. Running the feature matching in the command line raises the 
+# same issue. The solution if you have this problem as well on your pc is to open colmap gui in terminal and perform feature matching
+# within it. It is faster and has not crashed for me.
+
+# * Image retrieval using colmap that internally uses sift then ann matcher, then geometric verification to find top matches.
 # See publication below detailing the methods. This file uses the naive matcher so far, and is infeasible for large datasets,
 # but can be used as a baseline that we later compare with speeding up lookup with BoW, probably with MegaLoc that seems promising
 # in its description. 
@@ -49,7 +54,7 @@ class ColmapImageRetriever:
             db_path = self._get_database_path(workspace_suffix)
             self.db_paths[workspace_suffix] = db_path
             
-        print(f"Camera models - CAM1 ({cam1_type}): {cam1_camera_model}, CAM2 ({cam2_type}): {cam2_camera_model}")
+        #print(f"Camera models - CAM1 ({cam1_type}): {cam1_camera_model}, CAM2 ({cam2_type}): {cam2_camera_model}")
     
     def _get_database_path(self, workspace_suffix: str) -> Path:
         """Get the database path for a given workspace_suffix."""
@@ -234,7 +239,7 @@ def retrieve_top_matches(query_image_path: Path,
         cam2_type=cam2_type
     )
     
-    retriever.initialize_databases() # Consider passing force_rebuild if needed
+    #retriever.initialize_databases() # Consider passing force_rebuild if needed
     
     matches = retriever.find_matches_for_image(query_image_path, query_image_type, top_n)
     
