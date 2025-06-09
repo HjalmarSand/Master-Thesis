@@ -159,83 +159,150 @@ def analyze_trajectory(csv_path):
 
     print("\nAnalysis complete. Plots saved in", OUTPUT_DIR)
 
-def analyze_and_plot_results(directory="."):
+def analyze_and_plot_results(directories=None, directory="."):
     """
-    Finds all 'output*.csv' files, calculates adjusted average error,
+    Finds all 'output*.csv' files in one or more directories, calculates adjusted average error,
     and plots the results.
+    
+    Args:
+        directories: List of directory paths or dictionary with {label: path} pairs
+                    If None, uses the single 'directory' parameter
+        directory: Single directory path (used if directories is None)
     """
 
     ERROR_ADJUSTMENT = 9.30 # Average length between two GPS points in the dataset
     CSV_FILE_PATTERN = "output*.csv"  # Pattern to match relevant CSV files
-
-    # Discover all relevant CSV files in the specified directory.
-    search_path = os.path.join(directory, CSV_FILE_PATTERN)
-    csv_files = glob.glob(search_path)
-
-    if not csv_files:
-        print(f"Error: No files found matching the pattern '{CSV_FILE_PATTERN}' in this directory.")
-        return
-
-    print(f"Found {len(csv_files)} result files to analyze.")
     
-    plot_data = []
-
-    # Process each file to extract radius and calculate adjusted error.
-    for filepath in csv_files:
-        filename = os.path.basename(filepath)
-        
-        # Use a regular expression to reliably extract the numeric radius from the filename.
-        match = re.search(r'output(\d+)\.csv', filename)
-        if not match:
-            print(f"Warning: Skipping file with unexpected name format: {filename}")
-            continue
-            
-        radius = int(match.group(1))
-        
-        try:
-            df = pd.read_csv(filepath)
-            
-            # Calculate the average error
-            average_error = df['distance_meters'].mean()
-            
-            # Since the average error doesnt take the radius exclusion into account, we adjust the average error.
-            adjusted_average_error = average_error - ERROR_ADJUSTMENT * (radius + 1) 
-            
-            plot_data.append({
-                'radius': radius,
-                'adjusted_error': adjusted_average_error
-            })
-            
-            print(f"  - Processed {filename}: Radius={radius}, Adjusted Avg Error={adjusted_average_error:.2f}m")
-
-        except pd.errors.EmptyDataError:
-            print(f"Warning: The file {filename} is empty. Skipping.")
-        except Exception as e:
-            print(f"An error occurred while processing {filename}: {e}")
-
-    if not plot_data:
-        print("No data could be processed for plotting.")
+    # Handle different input formats
+    if directories is None:
+        # Single directory mode (backward compatibility)
+        directories = {"Results": directory}
+    elif isinstance(directories, list):
+        # Convert list to dictionary with automatic labels
+        directories = {f"Folder {i+1}": path for i, path in enumerate(directories)}
+    elif not isinstance(directories, dict):
+        print("Error: 'directories' must be a list of paths or a dictionary of {label: path}")
         return
-
-    # Sort the data by radius to ensure the plot is drawn in a logical order.
-    plot_data.sort(key=lambda item: item['radius'])
-
-    y_values = [item['adjusted_error'] for item in plot_data]
-    x_values = [item['radius'] * 9.30 for item in plot_data]
-
+    
+    # Define colors for different curves
+    colors = ['b', 'r', 'g', 'c', 'm', 'y', 'k', 'orange', 'purple', 'brown']
+    markers = ['o', 's', '^', 'v', 'D', 'p', '*', 'h', '+', 'x']
+    
     plt.style.use('seaborn-v0_8-whitegrid')
-    fig, ax = plt.subplots(figsize=(10, 7))
-
-    ax.plot(x_values, y_values, marker='o', linestyle='-', color='b', label='Adjusted Avg. Error')
-
-    ax.set_ylabel(" Error (m)", fontsize=12)
-    ax.set_xlabel("Exclusion radius", fontsize=12)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    all_data_found = False
+    
+    # Process each directory
+    for idx, (label, dir_path) in enumerate(directories.items()):
+        print(f"\nProcessing directory: {label} ({dir_path})")
+        
+        # Discover all relevant CSV files in the specified directory
+        search_path = os.path.join(dir_path, CSV_FILE_PATTERN)
+        csv_files = glob.glob(search_path)
+        
+        if not csv_files:
+            print(f"  Warning: No files found matching the pattern '{CSV_FILE_PATTERN}' in {dir_path}")
+            continue
+        
+        print(f"  Found {len(csv_files)} result files to analyze.")
+        
+        plot_data = []
+        
+        # Process each file to extract radius and calculate adjusted error
+        for filepath in csv_files:
+            filename = os.path.basename(filepath)
+            
+            # Use a regular expression to reliably extract the numeric radius from the filename
+            match = re.search(r'output(\d+)\.csv', filename)
+            if not match:
+                print(f"  Warning: Skipping file with unexpected name format: {filename}")
+                continue
+                
+            radius = int(match.group(1))
+            
+            try:
+                df = pd.read_csv(filepath)
+                
+                # Calculate the average error
+                average_error = df['distance_meters'].mean()
+                
+                # Since the average error doesnt take the radius exclusion into account, we adjust the average error
+                adjusted_average_error = average_error - ERROR_ADJUSTMENT * (radius + 1) 
+                
+                plot_data.append({
+                    'radius': radius,
+                    'adjusted_error': adjusted_average_error
+                })
+                
+                print(f"    - Processed {filename}: Radius={radius}, Adjusted Avg Error={adjusted_average_error:.2f}m")
+                
+            except pd.errors.EmptyDataError:
+                print(f"  Warning: The file {filename} is empty. Skipping.")
+            except Exception as e:
+                print(f"  An error occurred while processing {filename}: {e}")
+        
+        if not plot_data:
+            print(f"  No data could be processed for {label}.")
+            continue
+        
+        all_data_found = True
+        
+        # Sort the data by radius to ensure the plot is drawn in a logical order
+        plot_data.sort(key=lambda item: item['radius'])
+        
+        y_values = [item['adjusted_error'] for item in plot_data]
+        x_values = [item['radius'] * 9.30 for item in plot_data]
+        
+        # Choose color and marker
+        color = colors[idx % len(colors)]
+        marker = markers[idx % len(markers)]
+        
+        # Plot the curve for this directory
+        ax.plot(x_values, y_values, 
+                marker=marker, 
+                linestyle='-', 
+                color=color, 
+                label=label,
+                markersize=8,
+                linewidth=2)
+    
+    if not all_data_found:
+        print("\nNo data could be processed from any directory.")
+        return
+    
+    # Finalize the plot
+    ax.set_ylabel("Error (m)", fontsize=12)
+    ax.set_xlabel("Exclusion radius (m)", fontsize=12)
     ax.set_title("Impact of Exclusion Radius on Localization Error", fontsize=16, weight='bold')
-    ax.legend()
+    ax.legend(loc='best', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
     plt.tight_layout()
+    
+    # Save the plot
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+    
+    save_path = os.path.join(OUTPUT_DIR, 'multi_folder_comparison.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"\nPlot saved to: {save_path}")
+    
     print("Displaying plot...")
     plt.show()
 
 if __name__ == "__main__":
-    #analyze_trajectory(GPS_CSV_PATH)
-    analyze_and_plot_results(directory="results")
+    # Example usage for multiple folders:
+    
+    # Option 1: Using a list of directories (auto-labeled)
+    # analyze_and_plot_results(directories=["results_1", "results_2", "results_3"])
+    
+    # Option 2: Using a dictionary with custom labels
+    analyze_and_plot_results(directories={
+        "Distorted": "results/distorted",
+        "Undistorted": "results/undistorted"
+    })
+    
+    # Option 3: Single directory (backward compatible)
+    #analyze_and_plot_results(directory="results")
+    analyze_trajectory(GPS_CSV_PATH)
