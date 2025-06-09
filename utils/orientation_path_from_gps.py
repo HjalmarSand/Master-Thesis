@@ -71,7 +71,7 @@ def plot_trajectory(df, easting_col='easting', northing_col='northing', title_su
 
 if __name__ == "__main__":
     BASE_PATH = "." 
-    RELATIVE_PATH_TO_CSV = constants.DATASET1_CSV
+    RELATIVE_PATH_TO_CSV = constants.GPS_LOCATION_AND_ORIENTATION
     INPUT_CSV_FILE = os.path.join(BASE_PATH, RELATIVE_PATH_TO_CSV)
     input_dir = os.path.dirname(INPUT_CSV_FILE)
     input_filename_base = os.path.splitext(os.path.basename(INPUT_CSV_FILE))[0]

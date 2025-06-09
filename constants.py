@@ -9,7 +9,6 @@ IMAGES_DIR = PROJECT_ROOT / "images"
 
 # Dataset directory containing the original stacked images
 DATASET1_DIR = IMAGES_DIR / "dataset1" / "images"
-DATASET1_CSV = IMAGES_DIR / "gps_interpolated_with_orientation.csv"
 
 # COLMAP directory
 COLMAP_DIR = PROJECT_ROOT / "colmap_fisheye_project"
@@ -28,6 +27,7 @@ SPLIT_IMG_HEIGHT = 720
 
 # Distortion parameters CSV path
 DISTORTION_PARAMS_CSV = PROJECT_ROOT / "distortion_parameters.csv"
+GPS_LOCATION_AND_ORIENTATION = PROJECT_ROOT / "gps_interpolated_with_orientation.csv"
 
 # Output directories for various processing stages
 OUTPUT_DIR = PROJECT_ROOT / "output"
