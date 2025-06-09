@@ -103,7 +103,6 @@ class MegaLocDatabaseCreator:
             str: Base filename with 4-digit suffix and .jpg extension (e.g., "0801.jpg")
         """
         filename = os.path.basename(img_path)
-        # Remove extension
         name_without_ext = os.path.splitext(filename)[0]
         
         # Extract the last 4 digits from the filename
