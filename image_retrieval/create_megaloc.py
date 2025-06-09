@@ -24,7 +24,7 @@ class MegaLocDatabaseCreator:
             database_output_file: Output database filename
             input_image_size: MegaLoc input image size
         """
-        self.gps_csv_path = gps_csv_path or constants.DATASET1_CSV
+        self.gps_csv_path = gps_csv_path or constants.GPS_LOCATION_AND_ORIENTATION
         self.database_output_file = database_output_file
         self.input_image_size = input_image_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
