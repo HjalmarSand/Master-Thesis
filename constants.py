@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import numpy as np
+
 # --- Project Root Directory ---
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -24,6 +26,10 @@ CAM2_UNDISTORTED_FOLDER = IMAGES_DIR / "cam2_undistorted_images"
 # Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280
 SPLIT_IMG_HEIGHT = 720
+
+# Image dimensions after undistortion
+OUTPUT_IMG_WIDTH = 1280
+OUTPUT_IMG_HEIGHT = 960
 
 # Distortion parameters CSV path
 DISTORTION_PARAMS_CSV = PROJECT_ROOT / "distortion_parameters.csv"

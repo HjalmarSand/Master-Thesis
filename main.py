@@ -6,7 +6,11 @@ import pandas as pd
 import numpy as np
 
 from utils import split_stacked_images 
+
+# Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
 from utils.fisheye_undistorter import main as fisheye_undistorter_main
+# from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
+
 from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
 
@@ -241,6 +245,9 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                     results_output.append(f"No images found in {folder}")
                     continue
                 
+                # Sort images by their numeric part
+                all_images.sort(key=lambda x: int(get_original_numbered_file_name(x.name).split('.')[0]))
+                
                 print(f"Found {len(all_images)} images in {folder}")
                 results_output.append(f"Found {len(all_images)} images in {folder}")
                 
@@ -248,6 +255,13 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                 sample_images = all_images[::sample_rate]
                 print(f"Sampling {len(sample_images)} images (every {sample_rate}th image)")
                 results_output.append(f"Sampling {len(sample_images)} images (every {sample_rate}th image)")
+                
+                # Debug: print first few sampled images
+                if sample_images:
+                    print(f"  First sampled image: {sample_images[0].name}")
+                    if len(sample_images) > 1:
+                        print(f"  Second sampled image: {sample_images[1].name}")
+                    results_output.append(f"  First sampled image: {sample_images[0].name}")
                 
                 all_errors = []
                 missing_gps_count = 0

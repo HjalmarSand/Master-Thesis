@@ -1,0 +1,95 @@
+============================================================
+RETRIEVAL ACCURACY ANALYSIS RESULTS
+Timestamp: 2025-06-09 17:14:31
+Sample rate: Every 10th image
+============================================================
+
+Loaded GPS data for 700 images
+
+============================================================
+Distorted Images Analysis
+============================================================
+
+Analyzing cam1...
+Found 700 images in /home/arvid/Desktop/Fulcrom/bababoi/images/cam1_distorted_images
+Sampling 70 images (every 10th image)
+
+cam1 Results:
+  Total images in folder: 700
+  Images sampled: 70
+  Images with matches: 68
+  Images without matches: 2
+  Images missing GPS: 0
+  Total error measurements: 340
+
+Error Statistics:
+  Mean error: 32.20 meters
+  Median error: 18.69 meters
+  Std deviation: 48.59 meters
+  Min error: 7.27 meters
+  Max error: 429.51 meters
+  95th percentile: 82.58 meters
+
+Analyzing cam2...
+Found 700 images in /home/arvid/Desktop/Fulcrom/bababoi/images/cam2_distorted_images
+Sampling 70 images (every 10th image)
+
+cam2 Results:
+  Total images in folder: 700
+  Images sampled: 70
+  Images with matches: 70
+  Images without matches: 0
+  Images missing GPS: 0
+  Total error measurements: 350
+
+Error Statistics:
+  Mean error: 30.83 meters
+  Median error: 18.41 meters
+  Std deviation: 115.45 meters
+  Min error: 8.56 meters
+  Max error: 1925.37 meters
+  95th percentile: 51.53 meters
+
+============================================================
+Undistorted Images Analysis
+============================================================
+
+Analyzing cam1...
+Found 700 images in /home/arvid/Desktop/Fulcrom/bababoi/images/cam1_undistorted_images
+Sampling 70 images (every 10th image)
+
+cam1 Results:
+  Total images in folder: 700
+  Images sampled: 70
+  Images with matches: 70
+  Images without matches: 0
+  Images missing GPS: 0
+  Total error measurements: 350
+
+Error Statistics:
+  Mean error: 33.38 meters
+  Median error: 18.65 meters
+  Std deviation: 111.73 meters
+  Min error: 8.87 meters
+  Max error: 1993.73 meters
+  95th percentile: 71.06 meters
+
+Analyzing cam2...
+Found 700 images in /home/arvid/Desktop/Fulcrom/bababoi/images/cam2_undistorted_images
+Sampling 70 images (every 10th image)
+
+cam2 Results:
+  Total images in folder: 700
+  Images sampled: 70
+  Images with matches: 70
+  Images without matches: 0
+  Images missing GPS: 0
+  Total error measurements: 350
+
+Error Statistics:
+  Mean error: 23.40 meters
+  Median error: 18.40 meters
+  Std deviation: 52.87 meters
+  Min error: 8.97 meters
+  Max error: 718.92 meters
+  95th percentile: 37.38 meters
