@@ -9,7 +9,7 @@ import torchvision.transforms as T
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import argparse
-from database_imretrieval import MegaLocDatabaseCreator  # Database creation class
+from create_megaloc import MegaLocDatabaseCreator  # Database creation class
 
 DATABASE_FILE = "megaloc_undist_db.pkl"
 TOP_K_RESULTS = 5

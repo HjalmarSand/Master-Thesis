@@ -8,7 +8,7 @@ import glob
 import re
 
 
-GPS_CSV_PATH = constants.DATASET1_CSV  
+GPS_CSV_PATH = constants.GPS_LOCATION_AND_ORIENTATION  
 OUTPUT_DIR = "trajectory_analysis_output" # where to save plots
 
 def calculate_distance_easting_northing(e1, n1, e2, n2):
