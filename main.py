@@ -7,7 +7,6 @@ import numpy as np
 
 from utils import split_stacked_images 
 
-<<<<<<< HEAD
 # Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
 from utils.fisheye_undistorter import main as fisheye_undistorter_main
 # from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
@@ -15,8 +14,6 @@ from utils.fisheye_undistorter import main as fisheye_undistorter_main
 from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
 
-=======
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
 from image_retrieval.colmap_naive_image_retrieval import ColmapImageRetriever
 from image_retrieval.colmap_naive_image_retrieval import retrieve_top_matches
 
@@ -163,23 +160,13 @@ def build_colmap_databases(force_rebuild: bool = False):
         return False
 
 
-<<<<<<< HEAD
-def analyze_retrieval_accuracy(sample_rate: int = 10):
-    """
-    Stage 5: Analyze image retrieval accuracy by comparing GPS locations
-    
-    Args:
-        sample_rate: Sample every Nth image (default 10)
-=======
 def analyze_retrieval_accuracy(sample_rate: int = 1):
     """
     Stage 5: Analyze image retrieval accuracy by comparing GPS locations
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
     """
     print_stage_header(5, "RETRIEVAL ACCURACY ANALYSIS", 
                     "Analyzing location errors between queries and matches")
     
-<<<<<<< HEAD
     # Create output directory if it doesn't exist
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
@@ -200,21 +187,13 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
         # Load GPS data
         gps_df = pd.read_csv(constants.GPS_LOCATION_AND_ORIENTATION)
 
-=======
-    try:
-        # Load GPS data
-        gps_df = pd.read_csv("gps_interpolated_with_orientation.csv")
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
         # Create a lookup dictionary for faster access
         gps_lookup = {row['filename']: (row['easting'], row['northing']) 
                     for _, row in gps_df.iterrows()}
         
-<<<<<<< HEAD
         print(f"Loaded GPS data for {len(gps_lookup)} images")
         results_output.append(f"\nLoaded GPS data for {len(gps_lookup)} images")
         
-=======
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
         # Analysis configurations
         analysis_configs = [
             {
@@ -244,19 +223,15 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
             print(f"{config['name']}")
             print(f"{'='*60}")
             
-<<<<<<< HEAD
             results_output.append(f"\n{'='*60}")
             results_output.append(f"{config['name']}")
             results_output.append(f"{'='*60}")
             
-=======
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
             # Process cam1 and cam2 separately
             for cam_name, folder in [("cam1", config["cam1_folder"]), 
                                     ("cam2", config["cam2_folder"])]:
                 
                 print(f"\nAnalyzing {cam_name}...")
-<<<<<<< HEAD
                 results_output.append(f"\nAnalyzing {cam_name}...")
                 
                 # Get all images from the folder (both jpg and png)
@@ -306,29 +281,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
                     # Show progress
                     if (i + 1) % 10 == 0:
                         print(f"  Processing image {i + 1}/{len(sample_images)}...")
-=======
-                
-                # Get all images from the folder
-                all_images = list(folder.glob("*.jpg")) # TODO: Extend to png
-                if not all_images:
-                    print(f"No images found in {folder}")
-                    continue
-                
-                # Sample a subset for analysis (e.g., every 10th image)
-                sample_images = all_images[::sample_rate]
-                
-                all_errors = []
-                missing_gps_count = 0
-                
-                for query_image in sample_images:
-                    # Get query image location
-                    query_name = query_image.name
-                    if query_name not in gps_lookup:
-                        missing_gps_count += 1
-                        continue
-                    
-                    query_easting, query_northing = gps_lookup[query_name]
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
                     
                     # Retrieve matches
                     matches = retrieve_top_matches(
@@ -344,7 +296,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
                     )
                     
                     if not matches:
-<<<<<<< HEAD
                         no_matches_count += 1
                         continue
                     
@@ -356,15 +307,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
                         original_filename = get_original_numbered_file_name(match_name)
                         if original_filename in gps_lookup:
                             match_easting, match_northing = gps_lookup[original_filename]
-=======
-                        continue
-                    
-                    # Calculate errors for each match
-                    match_errors = []
-                    for match_name, inliers in matches:
-                        if match_name in gps_lookup:
-                            match_easting, match_northing = gps_lookup[match_name]
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
                             
                             # Calculate Euclidean distance
                             error = np.sqrt((query_easting - match_easting)**2 + 
@@ -381,7 +323,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
                     std_error = np.std(all_errors)
                     min_error = np.min(all_errors)
                     max_error = np.max(all_errors)
-<<<<<<< HEAD
                     percentile_95 = np.percentile(all_errors, 95)
                     
                     # Print to console
@@ -393,16 +334,11 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
                     print(f"  Images missing GPS: {missing_gps_count}")
                     print(f"  Total error measurements: {len(all_errors)}")
                     print(f"\nError Statistics:")
-=======
-                    
-                    print(f"\n{cam_name} Results ({len(sample_images)} queries sampled):")
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
                     print(f"  Mean error: {mean_error:.2f} meters")
                     print(f"  Median error: {median_error:.2f} meters")
                     print(f"  Std deviation: {std_error:.2f} meters")
                     print(f"  Min error: {min_error:.2f} meters")
                     print(f"  Max error: {max_error:.2f} meters")
-<<<<<<< HEAD
                     print(f"  95th percentile: {percentile_95:.2f} meters")
                     
                     # Add to output file
@@ -436,22 +372,13 @@ def analyze_retrieval_accuracy(sample_rate: int = 1):
             f.write('\n'.join(results_output))
         
         print(f"\nResults saved to: {output_file}")
-=======
-                    print(f"  Missing GPS data for {missing_gps_count} images")
-                else:
-                    print(f"\n{cam_name}: No valid matches found for error calculation")
-        
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
         print("\nRetrieval accuracy analysis completed")
         return True
         
     except Exception as e:
         print(f"Error during retrieval analysis: {e}")
-<<<<<<< HEAD
         import traceback
         traceback.print_exc()
-=======
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
         return False
 
 
@@ -464,11 +391,8 @@ def main():
                     help='Only run specific stages (e.g., --only-stages 3 4)')
     parser.add_argument('--rebuild-colmap', action='store_true',
                     help='Force rebuild of COLMAP databases')
-<<<<<<< HEAD
     parser.add_argument('--sample-rate', type=int, default=10,
                     help='Sample rate for analysis (default: every 10th image)')
-=======
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
     
     args = parser.parse_args()
     
@@ -478,11 +402,7 @@ def main():
         2: ("Undistort Fisheye", run_fisheye_undistortion),
         3: ("Process GPS/Orientation", run_gps_orientation_processing),
         4: ("Build COLMAP Databases", lambda: build_colmap_databases(args.rebuild_colmap)),
-<<<<<<< HEAD
         5: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate))
-=======
-        5: ("Analyze Retrieval Accuracy", analyze_retrieval_accuracy)
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
     }
     
     # Determine which stages to run
