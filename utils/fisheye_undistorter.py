@@ -1,5 +1,7 @@
 # Uses backward mapping to figure out what color a pixel on a blank canvas should have if it were taken with a rectilinear camera instead
 
+# Uses backward mapping to figure out what color a pixel on a blank canvas should have if it were taken with a rectilinear camera instead
+
 import cv2
 import numpy as np
 import pandas as pd
