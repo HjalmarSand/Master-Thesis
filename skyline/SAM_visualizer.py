@@ -4,8 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
 
-# HOWTO: use "pip install -e ." in the segment-anything directory to install the package
-# to use the segment-anything library, or ensure it's in your PYTHONPATH. 
+# HOW TO ACSESS SEGMENT ANYTHING: use "pip install -e ." in the segment-anything directory or ensure it's in your PYTHONPATH. 
 
 # --- HELPER FUNCTIONS ---
 
@@ -67,8 +66,7 @@ sam.to(device=device)
 
 predictor = SamPredictor(sam)
 
-# --- IMAGE AND PROMPT PREPARATION ---
-image_path = 'images/cam2_distorted_images/cam2_0801.jpg' # <--- CHANGE THIS TO AN IMAGE WITH ARTIFACTS
+image_path = 'images/cam1_undistorted_images/undistorted_cam1_1393.png' 
 image = cv2.imread(image_path)
 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
@@ -95,8 +93,6 @@ masks, _, _ = predictor.predict(
     point_labels=input_label,
     multimask_output=False,
 )
-
-# --- PROCESSING AND EXTRACTION (BEFORE AND AFTER) ---
 # 1. Get the raw mask and skyline
 raw_sky_mask = masks[0]
 raw_skyline = extract_skyline(raw_sky_mask)
@@ -112,7 +108,7 @@ fig, axes = plt.subplots(1, 2, figsize=(24, 10))
 # --- LEFT PLOT: BEFORE CLEANING ---
 ax1 = axes[0]
 ax1.imshow(image)
-show_mask(raw_sky_mask, ax1, color=np.array([255/255, 69/255, 0/255, 0.5])) # Orange-Red for raw mask
+show_mask(raw_sky_mask, ax1, color=np.array([255/255, 69/255, 0/255, 0.5])) 
 show_points(input_point, input_label, ax1)
 x_coords = np.arange(width)
 ax1.plot(x_coords, raw_skyline, color='yellow', linewidth=3, label='Raw Skyline')
@@ -123,7 +119,7 @@ ax1.legend()
 # --- RIGHT PLOT: AFTER CLEANING ---
 ax2 = axes[1]
 ax2.imshow(image)
-show_mask(cleaned_sky_mask, ax2, color=np.array([30/255, 144/255, 255/255, 0.5])) # Dodger Blue for cleaned mask
+show_mask(cleaned_sky_mask, ax2, color=np.array([30/255, 144/255, 255/255, 0.5])) 
 show_points(input_point, input_label, ax2)
 ax2.plot(x_coords, cleaned_skyline, color='cyan', linewidth=3, label='Cleaned Skyline')
 ax2.set_title("After Cleaning (Largest Component Kept)", fontsize=16)

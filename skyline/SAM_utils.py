@@ -2,7 +2,8 @@
 import cv2
 import torch
 import numpy as np
-from segment_anything import sam_model_registry, SamPredictor #HOW TO GET THE IMPORT: use "pip install -e ." in the segment-anything directory to install the package
+from segment_anything import sam_model_registry, SamPredictor 
+#HOW TO GET THE IMPORT: use "pip install -e ." in the segment-anything directory 
 # to use the segment-anything library, or ensure it's in your PYTHONPATH. 
 
 def setup_sam_predictor(model_type="vit_b", checkpoint_path="sam_vit_b_01ec64.pth"):

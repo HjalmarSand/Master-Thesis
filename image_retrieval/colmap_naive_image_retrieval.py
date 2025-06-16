@@ -54,11 +54,7 @@ class ColmapImageRetriever:
             db_path = self._get_database_path(workspace_suffix)
             self.db_paths[workspace_suffix] = db_path
             
-<<<<<<< HEAD
         #print(f"Camera models - CAM1 ({cam1_type}): {cam1_camera_model}, CAM2 ({cam2_type}): {cam2_camera_model}")
-=======
-        print(f"Camera models - CAM1 ({cam1_type}): {cam1_camera_model}, CAM2 ({cam2_type}): {cam2_camera_model}")
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
     
     def _get_database_path(self, workspace_suffix: str) -> Path:
         """Get the database path for a given workspace_suffix."""
@@ -243,11 +239,7 @@ def retrieve_top_matches(query_image_path: Path,
         cam2_type=cam2_type
     )
     
-<<<<<<< HEAD
     #retriever.initialize_databases() # Consider passing force_rebuild if needed
-=======
-    retriever.initialize_databases() # Consider passing force_rebuild if needed
->>>>>>> 57ed10a663a3a3b8da021dbfc1bac98873928198
     
     matches = retriever.find_matches_for_image(query_image_path, query_image_type, top_n)
     
