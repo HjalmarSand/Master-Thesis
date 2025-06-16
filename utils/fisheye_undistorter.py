@@ -11,7 +11,6 @@ import os
 import math
 from pathlib import Path
 
-# Import constants from constants.py
 import constants
 
 class FisheyeUndistorter:
@@ -147,6 +146,7 @@ class FisheyeUndistorter:
             [0, 0, 1]
         ])
 
+        # TODO: Correct matrix mult order? Check
         R_rect_to_fisheye = R_roll_matrix @ R_pitch_matrix @ R_yaw_matrix
 
         for v_out in range(output_height):
@@ -167,13 +167,13 @@ class FisheyeUndistorter:
                 theta_scene_radians = math.atan2(np.linalg.norm(ray_vec_fisheye[:2]), ray_vec_fisheye[2])
                 theta_scene_degrees = math.degrees(theta_scene_radians)
 
-                alpha_fisheye = math.atan2(ray_vec_fisheye[1], ray_vec_fisheye[0])
-
                 # Step 2: For that angle, where did the fisheye lens ACTUALLY put the information? (Find the landing spot in mm)
                 distorted_radius_mm = self.map_angle_to_distorted_radius_mm(theta_scene_degrees)
 
                 # Step 3: Convert that physical landing spot into a source coordinate radius
                 distorted_radius_pixels = distorted_radius_mm / self.avg_pixel_pitch_mm
+
+                alpha_fisheye = math.atan2(ray_vec_fisheye[1], ray_vec_fisheye[0])
 
                 # Step 4: These are the exact coordinates in the source fisheye image where the color information I need is located
                 u_fisheye = self.cx_input + distorted_radius_pixels * math.cos(alpha_fisheye)
@@ -324,7 +324,7 @@ def main():
     vertical_angle_offset_degrees = 0
     
     # !!! IMPORTANT: Start experimenting with this value ---
-    rotation_degrees = 9.0
+    rotation_degrees = 9
 
     # Get the roll-corrected central view
     center_roll_view = undistorter.get_roll_corrected_view(
