@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import os
 import math
 from pathlib import Path
+from tqdm import tqdm
 
 import constants
 
@@ -231,19 +232,19 @@ class FisheyeUndistorter:
             roll_degrees=roll_degrees # Only roll applied
         )
 
-
     def batch_process_images(self, input_dir, output_dir_left, output_dir_right,
-                            output_width, output_height,
-                            rectilinear_fov_degrees=90,
-                            horizontal_angle_offset_degrees=45,
-                            vertical_angle_offset_degrees=0,
-                            rotation_degrees=0):
+                                output_width, output_height,
+                                rectilinear_fov_degrees=90,
+                                horizontal_angle_offset_degrees=45,
+                                vertical_angle_offset_degrees=0,
+                                rotation_degrees=0):
 
         Path(output_dir_left).mkdir(parents=True, exist_ok=True)
         Path(output_dir_right).mkdir(parents=True, exist_ok=True)
 
         image_files = [f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        for filename in image_files:
+
+        for filename in tqdm(image_files, desc=f"Processing {Path(input_dir).name}"):
             input_path = os.path.join(input_dir, filename)
             fisheye_image = cv2.imread(input_path)
 
@@ -251,7 +252,8 @@ class FisheyeUndistorter:
                 print(f"Warning: Could not read image {filename}. Skipping.")
                 continue
 
-            print(f"Processing {filename}...")
+            tqdm.write(f"Processing {filename}...") 
+            
             left_view, right_view = self.undistort_fisheye_to_split_views(
                 fisheye_image,
                 output_width, output_height,
@@ -261,13 +263,24 @@ class FisheyeUndistorter:
                 rotation_degrees=rotation_degrees
             )
 
-            output_path_left = os.path.join(output_dir_left, f"undistorted_{Path(filename).stem}_left.jpg")
-            output_path_right = os.path.join(output_dir_right, f"undistorted_{Path(filename).stem}_right.jpg")
+            # 1. Get the filename without extension
+            original_stem, extension = os.path.splitext(filename)
+            
+            # 2. We replace 'distorted_' with an empty string ''.
+            new_stem = original_stem.replace('distorted_', '')
+
+            # 3. Build the new filename string.
+            new_filename_left = f"undistorted_{new_stem}_left{extension}"
+            new_filename_right = f"undistorted_{new_stem}_right{extension}"
+
+            # 4. Join the output directory with the new filename.
+            output_path_left = os.path.join(output_dir_left, new_filename_left)
+            output_path_right = os.path.join(output_dir_right, new_filename_right)
 
             cv2.imwrite(output_path_left, left_view)
             cv2.imwrite(output_path_right, right_view)
-            print(f"Saved left view to {output_path_left}")
-            print(f"Saved right view to {output_path_right}")
+
+        print(f"Finished processing batch for {Path(input_dir).name}.")
 
     def save_comparison_plot(self, original_image, left_view, right_view, center_roll_view, output_path, title="Fisheye Undistortion"):
         plt.figure(figsize=(24, 6))

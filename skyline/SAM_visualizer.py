@@ -1,8 +1,11 @@
+import os
 import cv2
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
+
+import constants
 
 # HOW TO ACSESS SEGMENT ANYTHING: use "pip install -e ." in the segment-anything directory or ensure it's in your PYTHONPATH. 
 
@@ -66,7 +69,7 @@ sam.to(device=device)
 
 predictor = SamPredictor(sam)
 
-image_path = 'images/cam1_undistorted_images/undistorted_cam1_1393.png' 
+image_path = os.path.join(constants.CAM1_DISTORTED_FOLDER, "distorted_cam1_1393.jpg") 
 image = cv2.imread(image_path)
 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 

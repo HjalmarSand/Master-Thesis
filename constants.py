@@ -20,8 +20,11 @@ CAM1_DISTORTED_FOLDER = IMAGES_DIR / "cam1_distorted_images"
 CAM2_DISTORTED_FOLDER = IMAGES_DIR / "cam2_distorted_images"
 
 # Undistorted image folders (output from fisheye correction)
-CAM1_UNDISTORTED_FOLDER = IMAGES_DIR / "cam1_undistorted_images"
-CAM2_UNDISTORTED_FOLDER = IMAGES_DIR / "cam2_undistorted_images"
+CAM1_UNDISTORTED_LEFT_FOLDER = IMAGES_DIR / "cam1_undistorted/cam1_undistorted_left_images"
+CAM1_UNDISTORTED_RIGHT_FOLDER = IMAGES_DIR / "cam1_undistorted/cam1_undistorted_right_images"
+
+CAM2_UNDISTORTED_LEFT_FOLDER = IMAGES_DIR / "cam2_undistorted/cam2_undistorted_left_images"
+CAM2_UNDISTORTED_RIGHT_FOLDER = IMAGES_DIR / "cam2_undistorted/cam2_undistorted_right_images"
 
 # Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280

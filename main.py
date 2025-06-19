@@ -8,7 +8,7 @@ import numpy as np
 from utils import split_stacked_images 
 
 # Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
-from utils.fisheye_undistorter import main as fisheye_undistorter_main
+from utils.fisheye_undistorter import FisheyeUndistorter
 # from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
 
 from utils import orientation_path_from_gps
@@ -61,23 +61,51 @@ def run_image_splitting():
 
 def run_fisheye_undistortion():
     """
-    Stage 2: Undistort fisheye images.
+    Stage 2: Undistort fisheye images for both cameras into left/right views.
+    - Processes cam1 with +9 degree roll correction.
+    - Processes cam2 with -9 degree roll correction.
     """
-    print_stage_header(2, "FISHEYE UNDISTORTION", 
-                    "Correcting fisheye distortion in camera images")
-    
+    print_stage_header(2, "FISHEYE UNDISTORTION",
+                    "Creating stereo left/right views for cam1 and cam2")
+
     try:
-        exit_code = fisheye_undistorter_main()
-        
-        if exit_code == 0:
-            print("Fisheye undistortion completed successfully!")
-            return True
-        else:
-            print("Fisheye undistortion failed!")
-            return False
-            
+        undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
+
+        # Cam1
+        print("\nProcessing Camera 1 into Left/Right views...")
+        undistorter.batch_process_images(
+            input_dir=constants.CAM1_DISTORTED_FOLDER,
+            output_dir_left=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
+            output_dir_right=constants.CAM1_UNDISTORTED_RIGHT_FOLDER,
+            output_width=constants.OUTPUT_IMG_WIDTH,
+            output_height=constants.OUTPUT_IMG_HEIGHT,
+            rectilinear_fov_degrees=90,
+            horizontal_angle_offset_degrees=45,
+            rotation_degrees=9.0
+        )
+        print("Camera 1 processing complete.")
+
+        # Cam2
+        print("\nProcessing Camera 2 into Left/Right views...")
+        undistorter.batch_process_images(
+            input_dir=constants.CAM2_DISTORTED_FOLDER,
+            output_dir_left=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
+            output_dir_right=constants.CAM2_UNDISTORTED_RIGHT_FOLDER,
+            output_width=constants.OUTPUT_IMG_WIDTH,
+            output_height=constants.OUTPUT_IMG_HEIGHT,
+            rectilinear_fov_degrees=90,
+            horizontal_angle_offset_degrees=45,
+            rotation_degrees=-9.0
+        )
+        print("Camera 2 processing complete.")
+
+        print("\nFisheye undistortion for both cameras finished successfully!")
+        return True
+
     except Exception as e:
-        print(f"Error during fisheye undistortion: {e}")
+        print(f"An error occurred during fisheye undistortion: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
