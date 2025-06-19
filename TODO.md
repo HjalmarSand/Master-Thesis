@@ -1,13 +1,9 @@
-## Camera param estimation:
-- Since a lot of the features extracted from the images behind the boat is the water and the person steering it, and these are so numerous, perhaps performing an ititial somewhat bad filtering of these features in the image can improve the matching? We could cut out an equally large part of the images since we always know how much of it will be occupied by the boat.
+## Update the paths and create some initial main pipeline method
+that creates and repopulates folders so its easy to reconstruct the project for new users.
 
-- Above point, the boat seems to be the issue in both directions with it containing a lot of keypoints. Perhaps a bad semantic segmentation can remove water and boat that is often foung, as well as maybe sun. We can also try to alter the dataset to only use images that actually have good keypoint matches by manually inspecting and then tryint to do a reconstruction of the parameters from these.
-
-## Normalizing the images
-After finding the camera parameters try to normalize how the images would look without fish eye distortion to perform segmentation on these instead, hopefully with higher accuracy.
-
-## Initial image matcher
-We perform image retrieval with sift keypoints and VLAD to find the most similar images in the database. 
+### Image retrieval continuation
+## Test working with the undistorted images
+Use the fisheye undistorter, after modifying it to undistort the entire dataset
 
 ## Filter out noise
 The images are filled with noisy keypoints of the water and the boat that make matching more difficult. Initially we should filter out the sections that we know are always or almost always filled up with boat and water right behind the boat. Then again perform an image matcher. 
@@ -44,3 +40,10 @@ kolla på datan, se om det finns överlap i trajectory så att vi kan ta bort bi
 Avvakta med vår novella idé 
 Ta fram relevant statistik om vår data, exempelvis 
 Skapa ett ramverk för att jämföra olika modeller
+
+
+
+## Important
+We need to remember that handling the distortion is probably very important. If we can not correctly undistort the images then viewing the same skyline at an angle will give a completely different height curve. There are two options, perhaps they can be used together. Undistort the skyline well. Train an AI-model to understand what a skyline should be encoded as where it learns the distortion if we have several angled images of the skyline, preferably from the same location although this might not be realistic because of sparse training data furfilling this. Perhaps exact locations are not important and close enough locations are enough. 
+
+TODO now asap is to try to undistort the fisheye singular direction images straight away into two 90-degree fov images

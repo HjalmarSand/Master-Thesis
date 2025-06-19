@@ -1,21 +1,46 @@
 from pathlib import Path
-import os
+
+import numpy as np
 
 # --- Project Root Directory ---
-PROJECT_ROOT_OF_SCRIPTS = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 # --- Data Directories ---
-DATASET1_DIR = PROJECT_ROOT_OF_SCRIPTS.parent / "images/dataset1/images"
+# Main images directory
+IMAGES_DIR = PROJECT_ROOT / "images"
 
-COLMAP_DIR = PROJECT_ROOT_OF_SCRIPTS.parent / "colmap_fisheye_project"
+# Dataset directory containing the original stacked images
+DATASET1_DIR = IMAGES_DIR / "dataset1" / "images"
 
-CAM1_DISTORTED_FOLDER = os.path.join(PROJECT_ROOT_OF_SCRIPTS, "images", "cam1_distorted_images")
-CAM2_DISTORTED_FOLDER = os.path.join(PROJECT_ROOT_OF_SCRIPTS, "images", "cam2_distorted_images")
+# COLMAP directory
+COLMAP_DIR = PROJECT_ROOT / "colmap_fisheye_project"
 
-# TODO: Get actual path
-CAM1_UNDISTORTED_FOLDER = os.path.join(PROJECT_ROOT_OF_SCRIPTS, "images", "cam1_undistorted_images")
-CAM2_UNDISTORTED_FOLDER = os.path.join(PROJECT_ROOT_OF_SCRIPTS, "images", "cam2_undistorted_images")
+# Distorted image folders (output from splitting stacked images)
+CAM1_DISTORTED_FOLDER = IMAGES_DIR / "cam1_distorted_images"
+CAM2_DISTORTED_FOLDER = IMAGES_DIR / "cam2_distorted_images"
 
-# found when running split_stacked_images.py
+# Undistorted image folders (output from fisheye correction)
+CAM1_UNDISTORTED_LEFT_FOLDER = IMAGES_DIR / "cam1_undistorted/cam1_undistorted_left_images"
+CAM1_UNDISTORTED_RIGHT_FOLDER = IMAGES_DIR / "cam1_undistorted/cam1_undistorted_right_images"
+
+CAM2_UNDISTORTED_LEFT_FOLDER = IMAGES_DIR / "cam2_undistorted/cam2_undistorted_left_images"
+CAM2_UNDISTORTED_RIGHT_FOLDER = IMAGES_DIR / "cam2_undistorted/cam2_undistorted_right_images"
+
+# Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280
 SPLIT_IMG_HEIGHT = 720
+
+# Image dimensions after undistortion
+OUTPUT_IMG_WIDTH = 1280
+OUTPUT_IMG_HEIGHT = 960
+
+# Distortion parameters CSV path
+DISTORTION_PARAMS_CSV = PROJECT_ROOT / "distortion_parameters.csv"
+GPS_LOCATION_AND_ORIENTATION = PROJECT_ROOT / "gps_interpolated_with_orientation.csv"
+
+# Output directories for various processing stages
+OUTPUT_DIR = PROJECT_ROOT / "output"
+PLOTS_DIR = OUTPUT_DIR / "plots"
+LOGS_DIR = OUTPUT_DIR / "logs"
+
+MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl"
