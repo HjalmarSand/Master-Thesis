@@ -11,11 +11,15 @@ from utils import split_stacked_images
 from utils.fisheye_undistorter import FisheyeUndistorter
 # from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
 
+from utils.create_panoramas import build_panoramas
+
 from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
 
 from image_retrieval.colmap_naive_image_retrieval import ColmapImageRetriever
 from image_retrieval.colmap_naive_image_retrieval import retrieve_top_matches
+
+from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
 
 import constants
 
@@ -107,8 +111,7 @@ def run_fisheye_undistortion():
         import traceback
         traceback.print_exc()
         return False
-
-
+    
 def run_gps_orientation_processing():
     """
     Stage 3: Process GPS and orientation data.
@@ -129,14 +132,79 @@ def run_gps_orientation_processing():
     except Exception as e:
         print(f"Error during GPS orientation processing: {e}")
         return False
+
+def run_panorama_stitching():
+    """
+    Stage 4: Stitch the four rectilinear views for each timestamp into a panorama.
+    """
+    print_stage_header(4, "PANORAMA STITCHING", 
+                    "Combining four views into a single panoramic image per timestamp")
     
+    try:
+        exit_code = build_panoramas(
+            cam1_left_dir=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
+            cam1_right_dir=constants.CAM1_UNDISTORTED_RIGHT_FOLDER,
+            cam2_left_dir=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
+            cam2_right_dir=constants.CAM2_UNDISTORTED_RIGHT_FOLDER,
+            output_dir=constants.PANORAMAS_DIR
+        )
+        
+        if exit_code == 0:
+            print("Panorama stitching completed successfully!")
+            return True
+        else:
+            print("Panorama stitching failed!")
+            return False
+            
+    except Exception as e:
+        print(f"An error occurred during panorama stitching: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# TODO: Right now we have only implemented for panoramas. We probably want to implement for fisheye images as well.
+# TODO: Above comment is just the start of how some of these methods need to be adapted to make comparissons on fisheye as well
+# TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
+# TODO: as is, both for skyline comparisson and classic image retrieval. Some of these methods also need to be updated for 
+# TODO: the new undistorted images that we have, with path changes and so on.
+def run_skyline_segmentation():
+    """
+    Stage 5: Use a prompted SAM Predictor to create binary skyline masks from panoramas.
+    """
+    print_stage_header(5, "SKYLINE SEGMENTATION", 
+                    "Generating binary sky masks using a prompted SAM predictor")
+    
+    try:
+        predictor = get_sam_predictor()
+        if predictor is None:
+            print("Could not initialize SAM predictor. Aborting stage.")
+            return False
+        
+        exit_code = segment_skyline_from_panoramas(
+            panorama_dir=constants.PANORAMAS_DIR,
+            output_dir=constants.SKYLINE_MASKS_DIR,
+            predictor=predictor
+        )
+        
+        if exit_code == 0:
+            print("Skyline segmentation completed successfully!")
+            return True
+        else:
+            print("Skyline segmentation failed!")
+            return False
+            
+    except Exception as e:
+        print(f"An error occurred during skyline segmentation: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def build_colmap_databases(force_rebuild: bool = False):
     """
-    Stage 4: Build COLMAP databases for image retrieval
+    Stage 6: Build COLMAP databases for image retrieval
     Builds databases for all combinations: distorted/undistorted x cam1/cam2
     """
-    print_stage_header(4, "BUILD COLMAP DATABASES", 
+    print_stage_header(6, "BUILD COLMAP DATABASES", 
                     "Building feature databases for image retrieval")
     
     try:
@@ -190,12 +258,12 @@ def build_colmap_databases(force_rebuild: bool = False):
 
 def analyze_retrieval_accuracy(sample_rate: int = 10):
     """
-    Stage 5: Analyze image retrieval accuracy by comparing GPS locations
+    Stage 7: Analyze image retrieval accuracy by comparing GPS locations
     
     Args:
         sample_rate: Sample every Nth image (default 10)
     """
-    print_stage_header(5, "RETRIEVAL ACCURACY ANALYSIS", 
+    print_stage_header(7, "RETRIEVAL ACCURACY ANALYSIS", 
                     "Analyzing location errors between queries and matches")
     
     # Create output directory if it doesn't exist
@@ -432,8 +500,10 @@ def main():
         1: ("Split Images", run_image_splitting),
         2: ("Undistort Fisheye", run_fisheye_undistortion),
         3: ("Process GPS/Orientation", run_gps_orientation_processing),
-        4: ("Build COLMAP Databases", lambda: build_colmap_databases(args.rebuild_colmap)),
-        5: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate))
+        4: ("Stitch Panoramas", run_panorama_stitching),
+        5: ("Segment Skylines", run_skyline_segmentation),
+        6: ("Build COLMAP Databases", lambda: build_colmap_databases(args.rebuild_colmap)),
+        7: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate))
     }
     
     # Determine which stages to run

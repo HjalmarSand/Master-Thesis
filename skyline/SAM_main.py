@@ -3,6 +3,7 @@ import os
 import json
 import argparse
 import numpy as np
+import tqdm
 from SAM_utils import setup_sam_predictor, extract_skyline_from_image, compare_skylines_fft
 
 def load_database(database_path):

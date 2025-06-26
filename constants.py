@@ -26,6 +26,9 @@ CAM1_UNDISTORTED_RIGHT_FOLDER = IMAGES_DIR / "cam1_undistorted/cam1_undistorted_
 CAM2_UNDISTORTED_LEFT_FOLDER = IMAGES_DIR / "cam2_undistorted/cam2_undistorted_left_images"
 CAM2_UNDISTORTED_RIGHT_FOLDER = IMAGES_DIR / "cam2_undistorted/cam2_undistorted_right_images"
 
+# Panorama output directory
+PANORAMAS_DIR = IMAGES_DIR / "panoramas"
+
 # Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280
 SPLIT_IMG_HEIGHT = 720
