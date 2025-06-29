@@ -72,6 +72,9 @@ image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 predictor.set_image(image)
 
+#If we want to see the features extracted by SAM, we can uncomment the following line:
+#image_embedding = predictor.features
+
 # --- PROMPT STRATEGY USING POINTS ---
 height, width, _ = image.shape
 positive_points = np.array([

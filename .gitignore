@@ -9,6 +9,7 @@ dino_salad.ckpt
 
 colmap_fisheye_project/
 results/
+lantmateri_data/
 
 *.jpg
 *.jpeg
