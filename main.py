@@ -21,6 +21,8 @@ from image_retrieval.colmap_naive_image_retrieval import retrieve_top_matches
 
 from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
 
+from utils.geospatial_processing import create_dsm_from_laz, generate_simulated_skylines
+
 import constants
 
 def print_separator(title=""):
@@ -479,6 +481,49 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
         import traceback
         traceback.print_exc()
         return False
+    
+def run_lidar_skyline_generation():
+    """
+    Stage 8: Create a DSM from LiDAR data and generate simulated skylines.
+    """
+    print_stage_header(8, "LIDAR SKYLINE GENERATION", 
+                    "Creating DSM and simulating views from a grid")
+    
+    dsm_path = constants.GEOSPATIAL_OUTPUT_DIR / "DSM_merged.tif"
+    sim_dir = constants.GEOSPATIAL_OUTPUT_DIR / "simulated_skylines"
+    
+    # Create the main output directory if it doesn't exist
+    constants.GEOSPATIAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        print("\nPart 1: Creating DSM from LAZ files")
+        dsm_success = create_dsm_from_laz(
+            laz_dir=constants.LIDAR_DATA_DIR,
+            output_dsm_path=dsm_path,
+            resolution=1.0
+        )
+        if not dsm_success:
+            print("DSM creation failed. Aborting stage.")
+            return False
+        
+        print("\nPart 2: Generating simulated skylines from DSM")
+        skyline_success = generate_simulated_skylines(
+            dsm_path=dsm_path,
+            grid_path=constants.OBSERVER_GRID_PATH,
+            output_dir=sim_dir
+        )
+        if not skyline_success:
+            print("Simulated skyline generation failed.")
+            return False
+        
+        print("\nLiDAR skyline generation completed successfully!")
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during LiDAR processing: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def main():
@@ -494,7 +539,6 @@ def main():
                     help='Sample rate for analysis (default: every 10th image)')
     
     args = parser.parse_args()
-    
     # Define all pipeline stages
     stages = {
         1: ("Split Images", run_image_splitting),
@@ -503,7 +547,9 @@ def main():
         4: ("Stitch Panoramas", run_panorama_stitching),
         5: ("Segment Skylines", run_skyline_segmentation),
         6: ("Build COLMAP Databases", lambda: build_colmap_databases(args.rebuild_colmap)),
-        7: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate))
+        7: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate)),
+        8: ("Generate LiDAR Skylines", run_lidar_skyline_generation),
+        #9: ("Match Skylines", run_skyline_matching) # TODO: Implement this
     }
     
     # Determine which stages to run

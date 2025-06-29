@@ -1,0 +1,30 @@
+name: exjobb
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.10 
+  - geopandas
+  - pdal
+  - pytorch
+  - torchvision
+  - torchaudio
+  - transformers
+  - datasets
+  - tokenizers
+  - safetensors
+  - pytorch-cuda=11.8
+  - pandas
+  - numpy
+  - scikit-learn
+  - matplotlib
+  - opencv
+  - tqdm
+  - pyside6
+  
+  - black
+  - flake8
+  - pip:
+    - segment-anything==1.0

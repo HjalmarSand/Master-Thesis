@@ -60,8 +60,14 @@ class FisheyeUndistorter:
         W_native, H_native = self.camera_specs['native_resolution']
         W_input, H_input = self.camera_specs['input_image_resolution']
 
-        sensor_width_mm = 3.674
-        sensor_height_mm = 2.760
+        # NOTE: This value was changed from 3.674 to the value below, which has resulted in vastly better normalization. 
+        # Previously the actual sensor width from the datasheet was used, but now instead the sensor width is derived 
+        # from checking the maximum real height in the distortion_parameters.csv and realising that the sensor isnt fully used.
+        # Instead the entire circular fisheye image is contained in the sensor, with black areas in all corners, where the sensor
+        # is not getting information. Using the actual physical dimensions of the sensor, when it is not all in use, gave the wrong
+        # conclusion of pixel pitch when the distance from the center to the edge corresponding 100 degrees fov is actually 
+        # 1.449585mm according to the csv-file. 
+        sensor_width_mm = 2.89917
 
         # !!! Pixel pitch here, used when we decide what pixel to sample by dividing height where light hits the sensor by pixel size to gain
         # !!! how many pixels from the center away the light is registered. 
@@ -76,7 +82,7 @@ class FisheyeUndistorter:
         self.pixel_pitch_y_mm = self.pixel_pitch_x_mm
         self.avg_pixel_pitch_mm = self.pixel_pitch_x_mm
 
-        print(f"Using known IMX219 sensor width: {sensor_width_mm:.3f}mm, height: {sensor_height_mm:.3f}mm")
+        print(f"Using sensor width: {sensor_width_mm:.3f}mm derived form CSV file")
         print(f"Calculated pixel pitch x: {self.pixel_pitch_x_mm*1000:.3f}um, y: {self.pixel_pitch_y_mm*1000:.3f}um (avg: {self.avg_pixel_pitch_mm*1000:.3f}um)")
 
         self.cx_input = W_input / 2.0
