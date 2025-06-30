@@ -58,7 +58,7 @@ def plot_trajectory(df, easting_col='easting', northing_col='northing', title_su
         return
 
     plt.figure(figsize=(12, 10)) 
-    plt.plot(df[easting_col], df[northing_col], marker='.', markersize=3, linestyle='-', color='blue', label='Trajectory Path', alpha=0.7)
+    plt.plot(df[easting_col], df[northing_col], marker='.', markersize=3, linestyle='', color='blue', label='Trajectory Path', alpha=0.7)
     plt.xlabel(f"{easting_col} (units)")
     plt.ylabel(f"{northing_col} (units)")
     plt.title(f'Boat Trajectory {title_suffix}'.strip())

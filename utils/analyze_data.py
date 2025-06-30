@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import math
 import os
 
-GPS_CSV_PATH = "Hjalmar/dataset1/gps_interpolated_with_orientation.csv"
+GPS_CSV_PATH = "images/data_2326/gps_interpolated.csv"
 OUTPUT_DIR = "trajectory_analysis_output" # where to save plots
 
 def calculate_distance_easting_northing(e1, n1, e2, n2):
