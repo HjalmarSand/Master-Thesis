@@ -8,6 +8,8 @@ __pycache__/
 dino_salad.ckpt
 
 colmap_fisheye_project/
+results/
+lantmateri_data/
 
 *.jpg
 *.jpeg
@@ -20,3 +22,4 @@ colmap_fisheye_project/
 *.heic
 *.heif
 *.pkl
+*.pth

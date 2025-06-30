@@ -86,7 +86,7 @@ def split_single_image(image_path, width, height_cam1, stacked_height, cam1_dir,
         actual_height, actual_width = composite_img.shape[:2]
         if actual_width != width or actual_height != stacked_height:
             print(f"  WARNING: {image_path.name} has unexpected dimensions "
-                  f"({actual_width}x{actual_height}) instead of ({width}x{stacked_height})")
+                f"({actual_width}x{actual_height}) instead of ({width}x{stacked_height})")
         
         # Split the image
         img_cam1 = composite_img[0:height_cam1, 0:width]
@@ -95,8 +95,8 @@ def split_single_image(image_path, width, height_cam1, stacked_height, cam1_dir,
         # Generate output filenames (keeping .jpg extension)
         base_name = image_path.stem  # filename without extension
         
-        output_cam1 = cam1_dir / f"cam1_{base_name}.jpg"
-        output_cam2 = cam2_dir / f"cam2_{base_name}.jpg"
+        output_cam1 = cam1_dir / f"distorted_cam1_{base_name}.jpg"
+        output_cam2 = cam2_dir / f"distorted_cam2_{base_name}.jpg"
         
         # Save the split images
         success1 = cv2.imwrite(str(output_cam1), img_cam1)

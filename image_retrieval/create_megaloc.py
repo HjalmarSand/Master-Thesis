@@ -1,4 +1,4 @@
-# database_imretrieval.py - Class-based database creation with MegaLoc
+# create_megaloc.py - Class-based database creation with MegaLoc
 import os
 import glob
 import pandas as pd
@@ -7,6 +7,7 @@ import torch
 import torchvision.transforms as T
 import pickle
 import numpy as np
+import re
 import constants
 
 class MegaLocDatabaseCreator:
@@ -14,7 +15,7 @@ class MegaLocDatabaseCreator:
     
     def __init__(self, 
                 gps_csv_path=None,
-                database_output_file="megaloc_db.pkl",
+                database_output_file="megaloc_undist_db.pkl",
                 input_image_size=(480, 640)):
         """
         Initialize the database creator.
@@ -24,7 +25,7 @@ class MegaLocDatabaseCreator:
             database_output_file: Output database filename
             input_image_size: MegaLoc input image size
         """
-        self.gps_csv_path = gps_csv_path or constants.DATASET1_CSV
+        self.gps_csv_path = gps_csv_path or constants.GPS_LOCATION_AND_ORIENTATION
         self.database_output_file = database_output_file
         self.input_image_size = input_image_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -90,26 +91,54 @@ class MegaLocDatabaseCreator:
             print(f"Warning: Could not process image {image_path}: {e}")
             return None
     
+    def extract_base_filename(self, img_path):
+        """
+        Extract the base filename from image path using the last 4 digits pattern.
+        Always returns with .jpg extension to match CSV file format.
+        
+        Args:
+            img_path: Full path to the image file
+            
+        Returns:
+            str: Base filename with 4-digit suffix and .jpg extension (e.g., "0801.jpg")
+        """
+        filename = os.path.basename(img_path)
+        name_without_ext = os.path.splitext(filename)[0]
+        
+        # Extract the last 4 digits from the filename
+        match = re.search(r'(\d{4})$', name_without_ext)
+        if match:
+            four_digits = match.group(1)
+            # Always return with .jpg extension to match CSV format
+            return four_digits + ".jpg"
+        else:
+            print(f"Warning: Could not extract 4-digit pattern from {filename}")
+            return None
+    
     def process_camera_images(self, camera_name, camera_path):
         """Process all images from a specific camera and return database entries."""
         database_entries = []
         
-        db_image_paths = glob.glob(os.path.join(camera_path, "*.jpg"))
+        # Look for both JPG and PNG files
+        jpg_paths = glob.glob(os.path.join(camera_path, "*.jpg"))
+        png_paths = glob.glob(os.path.join(camera_path, "*.png"))
+        db_image_paths = jpg_paths + png_paths
+        
         if not db_image_paths:
-            print(f"Warning: No JPG images found in {camera_path} for {camera_name}")
+            print(f"Warning: No JPG or PNG images found in {camera_path} for {camera_name}")
             return database_entries
         
         print(f"\nProcessing {camera_name} images from {camera_path}")
-        print(f"Found {len(db_image_paths)} images to process")
+        print(f"Found {len(db_image_paths)} images to process ({len(jpg_paths)} JPG, {len(png_paths)} PNG)")
         
         for i, img_path in enumerate(db_image_paths):
             if (i + 1) % 10 == 0 or i == 0:  # Progress indicator every 10 images
                 print(f"Processing {camera_name} image {i+1}/{len(db_image_paths)}")
             
-            base_filename_parts = os.path.basename(img_path).split('_')
-            original_base_name = base_filename_parts[1] if len(base_filename_parts) > 0 else os.path.basename(img_path)
+            # Extract base filename using the 4-digit pattern
+            original_base_name = self.extract_base_filename(img_path)
             
-            if original_base_name in self.gps_df.index:
+            if original_base_name and original_base_name in self.gps_df.index:
                 gps_data = self.gps_df.loc[original_base_name]
                 features = self.extract_features(img_path)
                 if features is not None:
@@ -123,7 +152,10 @@ class MegaLocDatabaseCreator:
                         "features": features
                     })
             else:
-                print(f"Warning: No GPS data for {original_base_name} (from {img_path}). Skipping.")
+                if original_base_name:
+                    print(f"Warning: No GPS data for {original_base_name} (from {img_path}). Skipping.")
+                else:
+                    print(f"Warning: Could not extract valid base name from {img_path}. Skipping.")
         
         return database_entries
     
@@ -147,8 +179,8 @@ class MegaLocDatabaseCreator:
         # Set default camera paths if not provided
         if camera_paths is None:
             camera_paths = {
-                'CAM1': constants.CAM1_DISTORTED_FOLDER,
-                'CAM2': constants.CAM2_DISTORTED_FOLDER
+                'CAM1': constants.CAM1_UNDISTORTED_FOLDER,
+                'CAM2': constants.CAM2_UNDISTORTED_FOLDER
             }
         
         try:
@@ -225,7 +257,8 @@ class MegaLocDatabaseCreator:
         info = {
             'total_entries': len(entries),
             'cameras': {},
-            'file_path': self.database_output_file
+            'file_path': self.database_output_file,
+            'file_types': {'jpg': 0, 'png': 0, 'other': 0}
         }
         
         for entry in entries:
@@ -233,6 +266,15 @@ class MegaLocDatabaseCreator:
             if camera not in info['cameras']:
                 info['cameras'][camera] = 0
             info['cameras'][camera] += 1
+            
+            # Count file types
+            path = entry.get('path', '')
+            if path.lower().endswith('.jpg'):
+                info['file_types']['jpg'] += 1
+            elif path.lower().endswith('.png'):
+                info['file_types']['png'] += 1
+            else:
+                info['file_types']['other'] += 1
         
         return info
 
@@ -248,6 +290,7 @@ def main():
             print(f"\nDatabase info:")
             print(f"  Total entries: {info['total_entries']}")
             print(f"  Cameras: {info['cameras']}")
+            print(f"  File types: {info['file_types']}")
     
     return success
 

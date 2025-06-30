@@ -40,3 +40,10 @@ kolla på datan, se om det finns överlap i trajectory så att vi kan ta bort bi
 Avvakta med vår novella idé 
 Ta fram relevant statistik om vår data, exempelvis 
 Skapa ett ramverk för att jämföra olika modeller
+
+
+
+## Important
+We need to remember that handling the distortion is probably very important. If we can not correctly undistort the images then viewing the same skyline at an angle will give a completely different height curve. There are two options, perhaps they can be used together. Undistort the skyline well. Train an AI-model to understand what a skyline should be encoded as where it learns the distortion if we have several angled images of the skyline, preferably from the same location although this might not be realistic because of sparse training data furfilling this. Perhaps exact locations are not important and close enough locations are enough. 
+
+TODO now asap is to try to undistort the fisheye singular direction images straight away into two 90-degree fov images

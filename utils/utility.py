@@ -24,3 +24,7 @@ def get_image_dimensions_opencv(image_path):
     except Exception as e:
         print(f"An unexpected error occurred with OpenCV while processing '{image_path}': {e}")
         return None
+    
+def get_original_numbered_file_name(file_name):
+    number_part = file_name.split(".")[0][-4:]  # Get last 4 chars before extension
+    return f"{number_part}.jpg"
