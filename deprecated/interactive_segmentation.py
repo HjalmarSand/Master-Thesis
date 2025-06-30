@@ -18,7 +18,7 @@ from image_segmenter import ImageSegmenter
 SEGMENTATION_MODEL_NAME = "nvidia/segformer-b0-finetuned-ade-512-512"
 DEFAULT_SKY_LABEL = "sky"
 
-IMAGE_TO_INSPECT = os.path.join(constants.CAM1_UNDISTORTED_FOLDER, "test.png") 
+IMAGE_TO_INSPECT = os.path.join(constants.CAM1_UNDISTORTED_FOLDER, "undistorted_cam1_0801.jpg") 
 
 class InteractiveSegmentationViewer:
     def __init__(self, image_pil, class_id_map, id2label_map):
