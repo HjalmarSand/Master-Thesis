@@ -23,7 +23,7 @@ dependencies:
   - opencv
   - tqdm
   - pyside6
-  
+  - pip
   - black
   - flake8
   - pip:
