@@ -68,17 +68,26 @@ def run_image_splitting():
 def run_fisheye_undistortion():
     """
     Stage 2: Undistort fisheye images for both cameras into left/right views.
-    - Processes cam1 with +9 degree roll correction.
-    - Processes cam2 with -9 degree roll correction.
+    - Applies roll correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(2, "FISHEYE UNDISTORTION",
-                    "Creating stereo left/right views for cam1 and cam2")
+                    "Applying symmetrical vertical alignment.")
+
+    MANUAL_VERTICAL_PIXEL_OFFSET = 30
 
     try:
+        half_offset = MANUAL_VERTICAL_PIXEL_OFFSET / 2.0
+        pitch_adjustment_angle = FisheyeUndistorter.calculate_pitch_correction_from_offset(
+            half_offset,
+            constants.OUTPUT_IMG_WIDTH,
+            90
+        )
+        print(f"\nApplying a symmetrical pitch adjustment of +/- {pitch_adjustment_angle:.4f} degrees to each camera.")
+
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
 
         # Cam1
-        print("\nProcessing Camera 1 into Left/Right views...")
+        print("\nProcessing Camera 1 (pitching down)...")
         undistorter.batch_process_images(
             input_dir=constants.CAM1_DISTORTED_FOLDER,
             output_dir_left=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
@@ -87,12 +96,13 @@ def run_fisheye_undistortion():
             output_height=constants.OUTPUT_IMG_HEIGHT,
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
-            rotation_degrees=9.0
+            vertical_angle_offset_degrees=-pitch_adjustment_angle,
+            rotation_degrees=9.2
         )
         print("Camera 1 processing complete.")
 
         # Cam2
-        print("\nProcessing Camera 2 into Left/Right views...")
+        print("\nProcessing Camera 2 (pitching up)...")
         undistorter.batch_process_images(
             input_dir=constants.CAM2_DISTORTED_FOLDER,
             output_dir_left=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
@@ -101,7 +111,8 @@ def run_fisheye_undistortion():
             output_height=constants.OUTPUT_IMG_HEIGHT,
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
-            rotation_degrees=-9.0
+            vertical_angle_offset_degrees=pitch_adjustment_angle,
+            rotation_degrees=-9.2
         )
         print("Camera 2 processing complete.")
 
@@ -434,7 +445,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                     print(f"  Images without matches: {no_matches_count}")
                     print(f"  Images missing GPS: {missing_gps_count}")
                     print(f"  Total error measurements: {len(all_errors)}")
-                    print(f"\nError Statistics:")
+                    print("\nError Statistics:")
                     print(f"  Mean error: {mean_error:.2f} meters")
                     print(f"  Median error: {median_error:.2f} meters")
                     print(f"  Std deviation: {std_error:.2f} meters")
@@ -450,7 +461,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                     results_output.append(f"  Images without matches: {no_matches_count}")
                     results_output.append(f"  Images missing GPS: {missing_gps_count}")
                     results_output.append(f"  Total error measurements: {len(all_errors)}")
-                    results_output.append(f"\nError Statistics:")
+                    results_output.append("\nError Statistics:")
                     results_output.append(f"  Mean error: {mean_error:.2f} meters")
                     results_output.append(f"  Median error: {median_error:.2f} meters")
                     results_output.append(f"  Std deviation: {std_error:.2f} meters")
