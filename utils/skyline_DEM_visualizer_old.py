@@ -1,46 +1,19 @@
-"""
-A script to visualize a sample of points from a .laz or .las file.
-
-This script uses PDAL to read a point cloud and offers two methods for 3D visualization:
-1. matplotlib: A common plotting library, good for basic visualization.
-2. open3d: A specialized 3D library for a better, interactive experience.
-
-INSTRUCTIONS:
-1. Make sure you have the required libraries installed:
-   - For both methods:
-     pip install pdal numpy
-   - For matplotlib (basic):
-     pip install matplotlib
-   - For open3d (recommended for better interaction):
-     pip install open3d
-
-2. Edit the CONFIGURATION section below.
-3. Run the script from your terminal:
-   python visualize_laz.py
-"""
-
 import pdal
 import numpy as np
 from pathlib import Path
-import json  # <--- THIS IS THE FIX. The missing import is now added.
+import json  
 
-# --- CONFIGURATION ---
-# --- Edit these values to match your setup ---
 
 # 1. Path to your LAZ or LAS file.
-LAZ_FILE_PATH = Path("./DSM_Data/y657_69_7500_17.laz")  # <--- CHANGE THIS to your file
+LAZ_FILE_PATH = Path("./DSM_Data/y657_69_7500_17.laz")  
 
 # 2. Maximum number of points to load for visualization.
-#    This prevents running out of memory with very large files.
-#    A value between 500,000 and 2,000,000 is usually good for modern computers.
-MAX_POINTS_TO_LOAD = 1_000_000
+MAX_POINTS_TO_LOAD = 1_000
 
-# 3. Choose your visualization library.
 #    'open3d' -> (Recommended) Provides a fast, interactive window.
 #    'matplotlib' -> Basic 3D plot, can be slow to interact with.
-VISUALIZATION_METHOD = 'open3d'  # <--- CHANGE to 'matplotlib' if you prefer
+VISUALIZATION_METHOD = 'matplotlib'  
 
-# --- End of Configuration ---
 
 
 def visualize_with_matplotlib(x, y, z):
@@ -108,9 +81,7 @@ def visualize_with_open3d(x, y, z):
 
 
 def main():
-    """Main function to drive the script."""
     print(f"--- Starting LAZ Visualization ---")
-
     if not LAZ_FILE_PATH.exists():
         print(f"FATAL ERROR: File not found at '{LAZ_FILE_PATH}'")
         return
@@ -118,20 +89,19 @@ def main():
     print(f"Reading and sampling up to {MAX_POINTS_TO_LOAD:,} points from file...")
     
     pipeline_json = {
-        "pipeline": [
-            {
-                "type": "readers.las",
-                "filename": str(LAZ_FILE_PATH)
-            },
-            {
-                "type": "filters.sample",
-                "count": MAX_POINTS_TO_LOAD
-            }
-        ]
+    "pipeline": [
+        {
+            "type": "readers.las",
+            "filename": str(LAZ_FILE_PATH)
+        },
+        {
+            "type": "filters.sample",
+            "radius": 1.0  # or another appropriate radius value
+        }
+    ]
     }
 
     try:
-        # json.dumps() requires the 'json' module to be imported
         pipeline = pdal.Pipeline(json.dumps(pipeline_json))
         pipeline.execute()
     except Exception as e:
