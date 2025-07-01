@@ -14,9 +14,74 @@ import math
 from pathlib import Path
 from tqdm import tqdm
 
+from multiprocessing import Pool, cpu_count
+
 import constants
 
+# It contains the logic from original 'for' loop.
+def _process_single_image_wrapper(args):
+    """
+    Wrapper function to process a single image.
+    It unpacks arguments to be used with pool.map.
+    """
+    # Unpack all arguments
+    (undistorter_instance, input_path, output_dir_left, output_dir_right,
+    output_width, output_height, rectilinear_fov_degrees,
+    horizontal_angle_offset_degrees, vertical_angle_offset_degrees,
+    rotation_degrees) = args
+
+    filename = os.path.basename(input_path)
+
+    try:
+        fisheye_image = cv2.imread(str(input_path))
+        if fisheye_image is None:
+            return (f"Warning: Could not read image {filename}. Skipping.", filename)
+
+        # Call the instance method to perform the core logic
+        left_view, right_view = undistorter_instance.undistort_fisheye_to_split_views(
+            fisheye_image,
+            output_width, output_height,
+            rectilinear_fov_degrees,
+            horizontal_angle_offset_degrees,
+            vertical_angle_offset_degrees,
+            rotation_degrees
+        )
+
+        original_stem, extension = os.path.splitext(filename)
+        new_stem = original_stem.replace('distorted_', '')
+        new_filename_left = f"undistorted_{new_stem}_left{extension}"
+        new_filename_right = f"undistorted_{new_stem}_right{extension}"
+        output_path_left = os.path.join(output_dir_left, new_filename_left)
+        output_path_right = os.path.join(output_dir_right, new_filename_right)
+
+        cv2.imwrite(output_path_left, left_view)
+        cv2.imwrite(output_path_right, right_view)
+
+        return (None, filename)
+    except Exception as e:
+        return (f"Error processing {filename}: {e}", filename)
+
 class FisheyeUndistorter:
+    @staticmethod
+    def calculate_pitch_correction_from_offset(pixel_offset, output_width, fov_degrees):
+        """
+        Converts a vertical pixel offset into a camera pitch angle in degrees.
+        This is a static method as it does not depend on a class instance.
+        """
+        if output_width == 0 or fov_degrees <= 0 or fov_degrees >= 180:
+            return 0.0
+        
+        # Calculate the focal length in pixels for the virtual rectilinear camera
+        fov_radians = math.radians(fov_degrees / 2.0)
+        focal_length_pixels = (output_width / 2.0) / math.tan(fov_radians)
+        
+        if focal_length_pixels == 0:
+            return 0.0
+
+        # The angle is the arctangent of the opposite (offset) over adjacent (focal length)
+        pitch_radians = math.atan(pixel_offset / focal_length_pixels)
+        return math.degrees(pitch_radians)
+
     def __init__(self, csv_path=None, csv_data=None):
         if csv_path is None and csv_data is None:
             csv_path = constants.DISTORTION_PARAMS_CSV
@@ -113,85 +178,82 @@ class FisheyeUndistorter:
                         yaw_degrees=0.0, pitch_degrees=0.0, roll_degrees=0.0):
         H_input_img, W_input_img = fisheye_image.shape[:2]
 
-        if output_width is None:
+        if output_width is None: 
             output_width = W_input_img
-        if output_height is None:
+        if output_height is None: 
             output_height = H_input_img
 
         cx_out = output_width / 2.0
         cy_out = output_height / 2.0
 
-        if output_rectilinear_fov_degrees <= 0 or output_rectilinear_fov_degrees >= 180:
-            raise ValueError("Output rectilinear FOV must be between 0 and 180 degrees.")
+        f_out_pixels = (output_width / 2.0) / np.tan(np.radians(output_rectilinear_fov_degrees / 2.0))
 
-        # Focal length. Use half output width as opposite side, then take half FOV angle. Tan angle = opposite / nearby --> nearby = opposite / tan angle
-        f_out_pixels = (output_width / 2.0) / math.tan(math.radians(output_rectilinear_fov_degrees / 2.0))
+        # 1. Create a grid of output pixel coordinates (u, v)
+        u_out, v_out = np.meshgrid(np.arange(output_width), np.arange(output_height))
 
-        map_x_remap = np.zeros((output_height, output_width), dtype=np.float32)
-        map_y_remap = np.zeros((output_height, output_width), dtype=np.float32)
+        # 2. Calculate ray vectors for all pixels at once
+        ray_x_rect = u_out - cx_out
+        ray_y_rect = v_out - cy_out
+        ray_z_rect = np.full_like(ray_x_rect, f_out_pixels) # Create a Z-array of the same shape
 
-        yaw_rad = math.radians(yaw_degrees)
-        pitch_rad = math.radians(pitch_degrees)
-        roll_rad = math.radians(roll_degrees)
+        # Stack into a (H, W, 3) array of vectors
+        ray_vectors_rect = np.stack([ray_x_rect, ray_y_rect, ray_z_rect], axis=-1)
 
+        # 3. Normalize all ray vectors
+        norms = np.linalg.norm(ray_vectors_rect, axis=-1, keepdims=True)
+        ray_vectors_rect_norm = ray_vectors_rect / norms
+
+        # 4. Build rotation matrix
+        yaw_rad, pitch_rad, roll_rad = np.radians([yaw_degrees, pitch_degrees, roll_degrees])
         # Yaw (around Y-axis)
-        R_yaw_matrix = np.array([
-            [math.cos(yaw_rad), 0, math.sin(yaw_rad)],
+        R_yaw = np.array([
+            [np.cos(yaw_rad), 0, np.sin(yaw_rad)],
             [0, 1, 0],
-            [-math.sin(yaw_rad), 0, math.cos(yaw_rad)]
+            [-np.sin(yaw_rad), 0, np.cos(yaw_rad)]
         ])
-
         # Pitch (around X-axis)
-        R_pitch_matrix = np.array([
+        R_pitch = np.array([
             [1, 0, 0],
-            [0, math.cos(pitch_rad), -math.sin(pitch_rad)],
-            [0, math.sin(pitch_rad), math.cos(pitch_rad)]
+            [0, np.cos(pitch_rad), np.sin(pitch_rad)],
+            [0, -np.sin(pitch_rad), np.cos(pitch_rad)]
         ])
 
         # Roll (around Z-axis)
-        R_roll_matrix = np.array([
-            [math.cos(roll_rad), -math.sin(roll_rad), 0],
-            [math.sin(roll_rad), math.cos(roll_rad), 0],
+        R_roll = np.array([
+            [np.cos(roll_rad), -np.sin(roll_rad), 0],
+            [np.sin(roll_rad), np.cos(roll_rad), 0],
             [0, 0, 1]
         ])
+        
+        #R_rect_to_fisheye = R_roll @ R_pitch @ R_yaw
+        R_rect_to_fisheye = R_roll @ R_yaw @ R_pitch
 
-        # TODO: Correct matrix mult order? Check
-        R_rect_to_fisheye = R_roll_matrix @ R_pitch_matrix @ R_yaw_matrix
+        # 5. Rotate all vectors at once using Einstein summation for efficiency
+        # This is equivalent to R_rect_to_fisheye @ ray_vectors_rect_norm for each pixel
+        ray_vectors_fisheye = np.einsum('ij,hwj->hwi', R_rect_to_fisheye, ray_vectors_rect_norm)
+        
+        # 6. Calculate spherical coordinates for all pixels
+        # Note: np.arctan2 takes (y, x) arguments
+        theta_scene_radians = np.arctan2(np.linalg.norm(ray_vectors_fisheye[..., :2], axis=-1), ray_vectors_fisheye[..., 2])
+        alpha_fisheye = np.arctan2(ray_vectors_fisheye[..., 1], ray_vectors_fisheye[..., 0])
 
-        for v_out in range(output_height):
-            for u_out in range(output_width):
-                ray_x_rect = (u_out - cx_out)
-                ray_y_rect = (v_out - cy_out)
-                ray_z_rect = f_out_pixels
+        theta_scene_degrees = np.degrees(theta_scene_radians)
 
-                ray_vec_local_rect = np.array([ray_x_rect, ray_y_rect, ray_z_rect])
+        # 7. Interpolate and convert to pixel radii for all pixels
+        distorted_radius_mm = self.map_angle_to_distorted_radius_mm(theta_scene_degrees)
+        distorted_radius_pixels = distorted_radius_mm / self.avg_pixel_pitch_mm
 
-                # Normalized 3D vector for pixel for virtual camera
-                ray_vec_local_rect_norm = ray_vec_local_rect / np.linalg.norm(ray_vec_local_rect)
+        # 8. Calculate the source fisheye coordinates (u_remap, v_remap) for all pixels
+        map_x_remap = self.cx_input + distorted_radius_pixels * np.cos(alpha_fisheye)
+        map_y_remap = self.cy_input + distorted_radius_pixels * np.sin(alpha_fisheye)
+        
+        # Ensure maps are float32 for cv2.remap
+        map_x_remap = map_x_remap.astype(np.float32)
+        map_y_remap = map_y_remap.astype(np.float32)
 
-                ray_vec_fisheye = R_rect_to_fisheye @ ray_vec_local_rect_norm
-
-                # Step 1: For this output pixel, what real-world angle SHOULD it represent? 
-                # Converting to degrees since that is used in real height polynomial fit
-                theta_scene_radians = math.atan2(np.linalg.norm(ray_vec_fisheye[:2]), ray_vec_fisheye[2])
-                theta_scene_degrees = math.degrees(theta_scene_radians)
-
-                # Step 2: For that angle, where did the fisheye lens ACTUALLY put the information? (Find the landing spot in mm)
-                distorted_radius_mm = self.map_angle_to_distorted_radius_mm(theta_scene_degrees)
-
-                # Step 3: Convert that physical landing spot into a source coordinate radius
-                distorted_radius_pixels = distorted_radius_mm / self.avg_pixel_pitch_mm
-
-                alpha_fisheye = math.atan2(ray_vec_fisheye[1], ray_vec_fisheye[0])
-
-                # Step 4: These are the exact coordinates in the source fisheye image where the color information I need is located
-                u_fisheye = self.cx_input + distorted_radius_pixels * math.cos(alpha_fisheye)
-                v_fisheye = self.cy_input + distorted_radius_pixels * math.sin(alpha_fisheye)
-
-                map_x_remap[v_out, u_out] = u_fisheye
-                map_y_remap[v_out, u_out] = v_fisheye
-
+        # 9. Perform the remapping
         undistorted_image = cv2.remap(fisheye_image, map_x_remap, map_y_remap, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        
         return undistorted_image
 
     def undistort_fisheye_to_split_views(self, fisheye_image,
@@ -248,43 +310,28 @@ class FisheyeUndistorter:
         Path(output_dir_left).mkdir(parents=True, exist_ok=True)
         Path(output_dir_right).mkdir(parents=True, exist_ok=True)
 
-        image_files = [f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        image_files = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-        for filename in tqdm(image_files, desc=f"Processing {Path(input_dir).name}"):
-            input_path = os.path.join(input_dir, filename)
-            fisheye_image = cv2.imread(input_path)
+        # Prepare arguments for each worker process
+        # We need to pass the instance 'self' to the worker
+        args_list = [(self, path, output_dir_left, output_dir_right,
+                    output_width, output_height, rectilinear_fov_degrees,
+                    horizontal_angle_offset_degrees, vertical_angle_offset_degrees,
+                    rotation_degrees) for path in image_files]
 
-            if fisheye_image is None:
-                print(f"Warning: Could not read image {filename}. Skipping.")
-                continue
+        # Use about 80% of CPU cores to leave some for system responsiveness
+        num_processes = max(1, int(cpu_count() * 0.8))
+        print(f"Starting parallel processing with {num_processes} cores...")
 
-            tqdm.write(f"Processing {filename}...") 
-            
-            left_view, right_view = self.undistort_fisheye_to_split_views(
-                fisheye_image,
-                output_width, output_height,
-                rectilinear_fov_degrees=rectilinear_fov_degrees,
-                horizontal_angle_offset_degrees=horizontal_angle_offset_degrees,
-                vertical_angle_offset_degrees=vertical_angle_offset_degrees,
-                rotation_degrees=rotation_degrees
-            )
-
-            # 1. Get the filename without extension
-            original_stem, extension = os.path.splitext(filename)
-            
-            # 2. We replace 'distorted_' with an empty string ''.
-            new_stem = original_stem.replace('distorted_', '')
-
-            # 3. Build the new filename string.
-            new_filename_left = f"undistorted_{new_stem}_left{extension}"
-            new_filename_right = f"undistorted_{new_stem}_right{extension}"
-
-            # 4. Join the output directory with the new filename.
-            output_path_left = os.path.join(output_dir_left, new_filename_left)
-            output_path_right = os.path.join(output_dir_right, new_filename_right)
-
-            cv2.imwrite(output_path_left, left_view)
-            cv2.imwrite(output_path_right, right_view)
+        # Create a pool of workers and distribute the tasks
+        with Pool(processes=num_processes) as pool:
+            # Use tqdm to create a progress bar for the parallel processing
+            results = list(tqdm(pool.imap_unordered(_process_single_image_wrapper, args_list), total=len(image_files), desc=f"Processing {Path(input_dir).name}"))
+        
+        # Log any errors that occurred in the child processes
+        for error, filename in results:
+            if error:
+                print(error)
 
         print(f"Finished processing batch for {Path(input_dir).name}.")
 
