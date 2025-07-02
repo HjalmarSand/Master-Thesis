@@ -68,12 +68,18 @@ def run_image_splitting():
 def run_fisheye_undistortion():
     """
     Stage 2: Undistort fisheye images for both cameras into left/right views.
-    - Applies roll correction and a symmetrical vertical pitch correction to both cameras.
+    - Applies roll and horizon bend correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(2, "FISHEYE UNDISTORTION",
                     "Applying symmetrical vertical alignment.")
 
-    MANUAL_VERTICAL_PIXEL_OFFSET = 30
+    # Verical alignment pixels 
+    MANUAL_VERTICAL_PIXEL_OFFSET = 17
+
+    # 2. Horizon Bending Correction
+    #HORIZON_BEND_CORRECTION = -0.000005
+    HORIZON_BEND_CORRECTION_CAM1 = 15
+    HORIZON_BEND_CORRECTION_CAM2 = -15
 
     try:
         half_offset = MANUAL_VERTICAL_PIXEL_OFFSET / 2.0
@@ -97,7 +103,8 @@ def run_fisheye_undistortion():
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
             vertical_angle_offset_degrees=-pitch_adjustment_angle,
-            rotation_degrees=9.2
+            rotation_degrees=9.44,
+            horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM1
         )
         print("Camera 1 processing complete.")
 
@@ -112,7 +119,8 @@ def run_fisheye_undistortion():
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
             vertical_angle_offset_degrees=pitch_adjustment_angle,
-            rotation_degrees=-9.2
+            rotation_degrees=-9.85,
+            horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM2
         )
         print("Camera 2 processing complete.")
 

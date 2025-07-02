@@ -1,10 +1,13 @@
 import os
+import sys
 import cv2
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#import constants
 import constants
 
 # HOW TO ACSESS SEGMENT ANYTHING: use "pip install -e ." in the segment-anything directory or ensure it's in your PYTHONPATH. 
@@ -61,15 +64,15 @@ def keep_largest_connected_component(mask):
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
-model_type = "vit_b"
-sam_checkpoint = "sam_vit_b_01ec64.pth"
+model_type = "vit_h"
+sam_checkpoint = "sam_vit_h_4b8939.pth"
 
 sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
 sam.to(device=device)
 
 predictor = SamPredictor(sam)
 
-image_path = os.path.join(constants.CAM1_DISTORTED_FOLDER, "distorted_cam1_1393.jpg") 
+image_path = os.path.join(constants.PANORAMAS_DIR, "panorama_0801.jpg") 
 image = cv2.imread(image_path)
 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
@@ -77,18 +80,26 @@ predictor.set_image(image)
 
 # --- PROMPT STRATEGY USING POINTS ---
 height, width, _ = image.shape
-positive_points = np.array([
-    [width // 4, height // 7], 
-    [width // 2, height // 7], 
-    [width * 3 // 4, height // 7],
-])
+#positive_points = np.array([
+#    [width // 4, height // 7], 
+#    [width // 2, height // 7], 
+#    [width * 3 // 4, height // 7],
+#])
+
+positive_points = [(i, height//4) for i in range(0, width, 100)]
+
 negative_points = np.array([
     [width // 2, height * 18 // 20], 
     [width // 4, height * 15 // 20], 
     [width * 3 // 4, height * 18 // 20],
 ])
-input_point = np.concatenate([positive_points, negative_points], axis=0)
-input_label = np.array([1, 1, 1, 0, 0, 0])
+
+negative_points_horizon = [(i, height//2 + 10) for i in range(0, width, 100)]
+
+input_point = np.concatenate([positive_points, negative_points, negative_points_horizon], axis=0)
+input_label = np.concatenate(
+    (np.ones(len(positive_points)), [0, 0, 0], np.zeros(len(negative_points_horizon)))
+)
 
 # --- PREDICTION ---
 masks, _, _ = predictor.predict(

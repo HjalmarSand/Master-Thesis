@@ -8,6 +8,7 @@ from segment_anything import sam_model_registry, SamPredictor
 def get_sam_predictor():
     """Initializes and returns the SAM model predictor."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(torch.cuda.is_available())
     print(f"Initializing SAM predictor on device: {device}")
     
     model_type = "vit_b"
