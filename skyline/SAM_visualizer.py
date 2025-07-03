@@ -86,7 +86,13 @@ height, width, _ = image.shape
 #    [width * 3 // 4, height // 7],
 #])
 
-positive_points = [(i, height//4) for i in range(0, width, 100)]
+positive_points = np.array([
+    [(width // 6) * 1, height // 7], 
+    [(width // 6) * 2, height // 7],
+    [(width // 6) * 3, height // 7],
+    [(width // 6) * 4, height // 7],
+    [(width // 6) * 5, height // 7],
+    ])
 
 negative_points = np.array([
     [width // 2, height * 18 // 20], 
@@ -94,12 +100,10 @@ negative_points = np.array([
     [width * 3 // 4, height * 18 // 20],
 ])
 
-negative_points_horizon = [(i, height//2 + 10) for i in range(0, width, 100)]
+#negative_points_horizon = [(i, height//2 + 10) for i in range(0, width, 100)]
 
-input_point = np.concatenate([positive_points, negative_points, negative_points_horizon], axis=0)
-input_label = np.concatenate(
-    (np.ones(len(positive_points)), [0, 0, 0], np.zeros(len(negative_points_horizon)))
-)
+input_point = np.concatenate([positive_points, negative_points], axis=0)
+input_label = np.array([1, 1, 1, 1, 1, 0, 0, 0])
 
 # --- PREDICTION ---
 masks, _, _ = predictor.predict(
