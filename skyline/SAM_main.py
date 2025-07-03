@@ -6,6 +6,8 @@ import numpy as np
 import tqdm
 from SAM_utils import setup_sam_predictor, extract_skyline_from_image, compare_skylines_fft
 
+#TODO add evaluation metrics for skyline comparison
+
 def load_database(database_path):
     """Load the skyline database from JSON file."""
     with open(database_path, 'r') as f:

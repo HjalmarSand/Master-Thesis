@@ -5,10 +5,16 @@ import geopandas as gpd
 from pathlib import Path
 import pandas as pd
 import numpy as np
+# In skyline_generator.py
+
+import pdal
+import json
+from pathlib import Path
 
 def create_dsm_from_laz(laz_dir: Path, output_dsm_path: Path, resolution: float = 1.0):
     """
-    Finds all .laz files in a directory, merges them, and creates a single DSM.
+    Finds all .laz files in a directory using a glob pattern, streams them,
+    and creates a single DSM in a memory-efficient way.
 
     Args:
         laz_dir: Path to the directory containing .laz files.
@@ -16,23 +22,27 @@ def create_dsm_from_laz(laz_dir: Path, output_dsm_path: Path, resolution: float 
         resolution: The resolution of the output DSM in meters.
     """
     print(f"Searching for .laz files in: {laz_dir}")
-    laz_files = list(laz_dir.glob("*.laz"))
-    if not laz_files:
+    # Use a glob pattern for the filename. This is the key change.
+    laz_pattern = laz_dir / "*.laz"
+    
+    # Check if any files match the pattern.
+    # We can do a quick check to provide a user-friendly message.
+    if not list(laz_dir.glob("*.laz")):
         print("Error: No .laz files found in the specified directory.")
         return False
     
-    print(f"Found {len(laz_files)} .laz files to process.")
+    print(f"Found .laz files. Will process them as a stream.")
     
     # Create the parent directory for the output if it doesn't exist
     output_dsm_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # This PDAL pipeline reads multiple LAZ files, merges them, and writes a single DSM
+    # This updated PDAL pipeline streams data from all matching LAZ files.
+    # Notice there is no `filters.merge` and only one reader entry.
     pipeline_json = {
         "pipeline": [
-            # The reader can be specified for each file
-            *laz_files,
             {
-                "type": "filters.merge"
+                "type": "readers.las",
+                "filename": str(laz_pattern) # The reader uses the wildcard pattern here
             },
             {
                 "type": "writers.gdal",
@@ -40,21 +50,24 @@ def create_dsm_from_laz(laz_dir: Path, output_dsm_path: Path, resolution: float 
                 "gdaldriver": "GTiff",
                 "output_type": "max",  # Use the highest point (buildings, trees)
                 "resolution": resolution,
-                "data_type": "float32"
+                "data_type": "float32",
+                "gdalopts": "COMPRESS=LZW,TILED=YES" # Added compression and tiling for efficiency
             }
         ]
     }
     
     try:
-        print("Executing PDAL pipeline to create DSM...")
+        print("Executing memory-efficient PDAL pipeline to create DSM...")
         pipeline = pdal.Pipeline(json.dumps(pipeline_json))
-        pipeline.execute()
+        # This will now process files sequentially without loading them all into memory.
+        pipeline.execute() 
         print(f"DSM created successfully at {output_dsm_path}")
         return True
     except Exception as e:
         print(f"An error occurred during PDAL DSM creation: {e}")
         return False
-
+    
+    
 def generate_simulated_skylines(dsm_path: Path, grid_path: Path, output_dir: Path, observer_height: float = 1.7):
     """
     Generates 360-degree skyline profiles for each point in a grid file using GRASS r.horizon.

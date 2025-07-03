@@ -25,5 +25,6 @@ dependencies:
 - pyside6
 - black
 - flake8
+- pip
 - pip:
   - segment-anything==1.0
