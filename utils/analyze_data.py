@@ -7,8 +7,12 @@ import constants
 import glob 
 import re
 
+<<<<<<< HEAD
+GPS_CSV_PATH = "images/data_2326/gps_interpolated.csv"
+=======
 
 GPS_CSV_PATH = constants.GPS_LOCATION_AND_ORIENTATION  
+>>>>>>> 9c696b9654e69d79fc9122013e16de2906d2bd3e
 OUTPUT_DIR = "trajectory_analysis_output" # where to save plots
 
 def calculate_distance_easting_northing(e1, n1, e2, n2):

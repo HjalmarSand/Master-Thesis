@@ -4,12 +4,13 @@ import json
 import argparse
 import pandas as pd
 from tqdm import tqdm
+import constants
 from SAM_utils import setup_sam_predictor, extract_skyline_from_image
 
 def main():
     parser = argparse.ArgumentParser(description="Build a skyline database from a folder of images.")
     parser.add_argument("--image_dir", required=True, help="Path to the directory with reference images.")
-    parser.add_argument("--metadata_csv", required=True, help="Path to the CSV file with GPS metadata.")
+    parser.add_argument("--metadata_csv", default=constants.GPS_LOCATION_AND_ORIENTATION, help="Path to the CSV file with GPS metadata.")
     parser.add_argument("--output_file", default="skyline_database.json", help="Path to save the output JSON database.")
     parser.add_argument("--sam_checkpoint", default="sam_vit_b_01ec64.pth", help="Path to the SAM model checkpoint.")
     args = parser.parse_args()

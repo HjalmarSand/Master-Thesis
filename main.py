@@ -11,11 +11,17 @@ from utils import split_stacked_images
 from utils.fisheye_undistorter import FisheyeUndistorter
 # from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
 
+from utils.create_panoramas import build_panoramas
+
 from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
 
 from image_retrieval.colmap_naive_image_retrieval import ColmapImageRetriever
 from image_retrieval.colmap_naive_image_retrieval import retrieve_top_matches
+
+from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
+
+from utils.geospatial_processing import create_dsm_from_laz, generate_simulated_skylines
 
 import constants
 
@@ -62,17 +68,32 @@ def run_image_splitting():
 def run_fisheye_undistortion():
     """
     Stage 2: Undistort fisheye images for both cameras into left/right views.
-    - Processes cam1 with +9 degree roll correction.
-    - Processes cam2 with -9 degree roll correction.
+    - Applies roll and horizon bend correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(2, "FISHEYE UNDISTORTION",
-                    "Creating stereo left/right views for cam1 and cam2")
+                    "Applying symmetrical vertical alignment.")
+
+    # Verical alignment pixels 
+    MANUAL_VERTICAL_PIXEL_OFFSET = 17
+
+    # 2. Horizon Bending Correction
+    #HORIZON_BEND_CORRECTION = -0.000005
+    HORIZON_BEND_CORRECTION_CAM1 = 15
+    HORIZON_BEND_CORRECTION_CAM2 = -15
 
     try:
+        half_offset = MANUAL_VERTICAL_PIXEL_OFFSET / 2.0
+        pitch_adjustment_angle = FisheyeUndistorter.calculate_pitch_correction_from_offset(
+            half_offset,
+            constants.OUTPUT_IMG_WIDTH,
+            90
+        )
+        print(f"\nApplying a symmetrical pitch adjustment of +/- {pitch_adjustment_angle:.4f} degrees to each camera.")
+
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
 
         # Cam1
-        print("\nProcessing Camera 1 into Left/Right views...")
+        print("\nProcessing Camera 1 (pitching down)...")
         undistorter.batch_process_images(
             input_dir=constants.CAM1_DISTORTED_FOLDER,
             output_dir_left=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
@@ -81,12 +102,14 @@ def run_fisheye_undistortion():
             output_height=constants.OUTPUT_IMG_HEIGHT,
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
-            rotation_degrees=9.0
+            vertical_angle_offset_degrees=-pitch_adjustment_angle,
+            rotation_degrees=9.44,
+            horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM1
         )
         print("Camera 1 processing complete.")
 
         # Cam2
-        print("\nProcessing Camera 2 into Left/Right views...")
+        print("\nProcessing Camera 2 (pitching up)...")
         undistorter.batch_process_images(
             input_dir=constants.CAM2_DISTORTED_FOLDER,
             output_dir_left=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
@@ -95,7 +118,9 @@ def run_fisheye_undistortion():
             output_height=constants.OUTPUT_IMG_HEIGHT,
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
-            rotation_degrees=-9.0
+            vertical_angle_offset_degrees=pitch_adjustment_angle,
+            rotation_degrees=-9.85,
+            horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM2
         )
         print("Camera 2 processing complete.")
 
@@ -107,8 +132,7 @@ def run_fisheye_undistortion():
         import traceback
         traceback.print_exc()
         return False
-
-
+    
 def run_gps_orientation_processing():
     """
     Stage 3: Process GPS and orientation data.
@@ -129,14 +153,79 @@ def run_gps_orientation_processing():
     except Exception as e:
         print(f"Error during GPS orientation processing: {e}")
         return False
+
+def run_panorama_stitching():
+    """
+    Stage 4: Stitch the four rectilinear views for each timestamp into a panorama.
+    """
+    print_stage_header(4, "PANORAMA STITCHING", 
+                    "Combining four views into a single panoramic image per timestamp")
     
+    try:
+        exit_code = build_panoramas(
+            cam1_left_dir=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
+            cam1_right_dir=constants.CAM1_UNDISTORTED_RIGHT_FOLDER,
+            cam2_left_dir=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
+            cam2_right_dir=constants.CAM2_UNDISTORTED_RIGHT_FOLDER,
+            output_dir=constants.PANORAMAS_DIR
+        )
+        
+        if exit_code == 0:
+            print("Panorama stitching completed successfully!")
+            return True
+        else:
+            print("Panorama stitching failed!")
+            return False
+            
+    except Exception as e:
+        print(f"An error occurred during panorama stitching: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# TODO: Right now we have only implemented for panoramas. We probably want to implement for fisheye images as well.
+# TODO: Above comment is just the start of how some of these methods need to be adapted to make comparissons on fisheye as well
+# TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
+# TODO: as is, both for skyline comparisson and classic image retrieval. Some of these methods also need to be updated for 
+# TODO: the new undistorted images that we have, with path changes and so on.
+def run_skyline_segmentation():
+    """
+    Stage 5: Use a prompted SAM Predictor to create binary skyline masks from panoramas.
+    """
+    print_stage_header(5, "SKYLINE SEGMENTATION", 
+                    "Generating binary sky masks using a prompted SAM predictor")
+    
+    try:
+        predictor = get_sam_predictor()
+        if predictor is None:
+            print("Could not initialize SAM predictor. Aborting stage.")
+            return False
+        
+        exit_code = segment_skyline_from_panoramas(
+            panorama_dir=constants.PANORAMAS_DIR,
+            output_dir=constants.SKYLINE_MASKS_DIR,
+            predictor=predictor
+        )
+        
+        if exit_code == 0:
+            print("Skyline segmentation completed successfully!")
+            return True
+        else:
+            print("Skyline segmentation failed!")
+            return False
+            
+    except Exception as e:
+        print(f"An error occurred during skyline segmentation: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def build_colmap_databases(force_rebuild: bool = False):
     """
-    Stage 4: Build COLMAP databases for image retrieval
+    Stage 6: Build COLMAP databases for image retrieval
     Builds databases for all combinations: distorted/undistorted x cam1/cam2
     """
-    print_stage_header(4, "BUILD COLMAP DATABASES", 
+    print_stage_header(6, "BUILD COLMAP DATABASES", 
                     "Building feature databases for image retrieval")
     
     try:
@@ -190,12 +279,12 @@ def build_colmap_databases(force_rebuild: bool = False):
 
 def analyze_retrieval_accuracy(sample_rate: int = 10):
     """
-    Stage 5: Analyze image retrieval accuracy by comparing GPS locations
+    Stage 7: Analyze image retrieval accuracy by comparing GPS locations
     
     Args:
         sample_rate: Sample every Nth image (default 10)
     """
-    print_stage_header(5, "RETRIEVAL ACCURACY ANALYSIS", 
+    print_stage_header(7, "RETRIEVAL ACCURACY ANALYSIS", 
                     "Analyzing location errors between queries and matches")
     
     # Create output directory if it doesn't exist
@@ -364,7 +453,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                     print(f"  Images without matches: {no_matches_count}")
                     print(f"  Images missing GPS: {missing_gps_count}")
                     print(f"  Total error measurements: {len(all_errors)}")
-                    print(f"\nError Statistics:")
+                    print("\nError Statistics:")
                     print(f"  Mean error: {mean_error:.2f} meters")
                     print(f"  Median error: {median_error:.2f} meters")
                     print(f"  Std deviation: {std_error:.2f} meters")
@@ -380,7 +469,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                     results_output.append(f"  Images without matches: {no_matches_count}")
                     results_output.append(f"  Images missing GPS: {missing_gps_count}")
                     results_output.append(f"  Total error measurements: {len(all_errors)}")
-                    results_output.append(f"\nError Statistics:")
+                    results_output.append("\nError Statistics:")
                     results_output.append(f"  Mean error: {mean_error:.2f} meters")
                     results_output.append(f"  Median error: {median_error:.2f} meters")
                     results_output.append(f"  Std deviation: {std_error:.2f} meters")
@@ -411,6 +500,49 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
         import traceback
         traceback.print_exc()
         return False
+    
+def run_lidar_skyline_generation():
+    """
+    Stage 8: Create a DSM from LiDAR data and generate simulated skylines.
+    """
+    print_stage_header(8, "LIDAR SKYLINE GENERATION", 
+                    "Creating DSM and simulating views from a grid")
+    
+    dsm_path = constants.GEOSPATIAL_OUTPUT_DIR / "DSM_merged.tif"
+    sim_dir = constants.GEOSPATIAL_OUTPUT_DIR / "simulated_skylines"
+    
+    # Create the main output directory if it doesn't exist
+    constants.GEOSPATIAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        print("\nPart 1: Creating DSM from LAZ files")
+        dsm_success = create_dsm_from_laz(
+            laz_dir=constants.LIDAR_DATA_DIR,
+            output_dsm_path=dsm_path,
+            resolution=1.0
+        )
+        if not dsm_success:
+            print("DSM creation failed. Aborting stage.")
+            return False
+        
+        print("\nPart 2: Generating simulated skylines from DSM")
+        skyline_success = generate_simulated_skylines(
+            dsm_path=dsm_path,
+            grid_path=constants.OBSERVER_GRID_PATH,
+            output_dir=sim_dir
+        )
+        if not skyline_success:
+            print("Simulated skyline generation failed.")
+            return False
+        
+        print("\nLiDAR skyline generation completed successfully!")
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during LiDAR processing: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def main():
@@ -426,14 +558,17 @@ def main():
                     help='Sample rate for analysis (default: every 10th image)')
     
     args = parser.parse_args()
-    
     # Define all pipeline stages
     stages = {
         1: ("Split Images", run_image_splitting),
         2: ("Undistort Fisheye", run_fisheye_undistortion),
         3: ("Process GPS/Orientation", run_gps_orientation_processing),
-        4: ("Build COLMAP Databases", lambda: build_colmap_databases(args.rebuild_colmap)),
-        5: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate))
+        4: ("Stitch Panoramas", run_panorama_stitching),
+        5: ("Segment Skylines", run_skyline_segmentation),
+        6: ("Build COLMAP Databases", lambda: build_colmap_databases(args.rebuild_colmap)),
+        7: ("Analyze Retrieval Accuracy", lambda: analyze_retrieval_accuracy(args.sample_rate)),
+        8: ("Generate LiDAR Skylines", run_lidar_skyline_generation),
+        #9: ("Match Skylines", run_skyline_matching) # TODO: Implement this
     }
     
     # Determine which stages to run
