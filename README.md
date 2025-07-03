@@ -1,3 +1,2 @@
-# bobboyet
-Geo-localization using images and an image database
 # bababoi
+Geo-localization using images and an image database
