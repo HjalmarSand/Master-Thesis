@@ -133,7 +133,7 @@ def run_gps_orientation_processing():
                     "Processing GPS coordinates and orientation data")
     
     try:
-        exit_code = orientation_path_from_gps.main()
+        exit_code = orientation_path_from_gps.main() #TODO:down the line we fix this, there is no main function right now
         
         if exit_code == 0:
             print("GPS orientation processing completed successfully!")
@@ -159,7 +159,8 @@ def run_panorama_stitching():
             cam1_right_dir=constants.CAM1_UNDISTORTED_RIGHT_FOLDER,
             cam2_left_dir=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
             cam2_right_dir=constants.CAM2_UNDISTORTED_RIGHT_FOLDER,
-            output_dir=constants.PANORAMAS_DIR
+            output_dir=constants.PANORAMAS_DIR,
+            orientation_csv_path=constants.GPS_LOCATION_AND_ORIENTATION
         )
         
         if exit_code == 0:
