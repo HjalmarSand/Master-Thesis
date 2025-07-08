@@ -14,7 +14,6 @@ from numpy import sin, cos
 from numba import njit
 import scipy.interpolate as interp
 
-
 X_C = 639.5
 Y_C = 359.5
 

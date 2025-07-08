@@ -87,7 +87,7 @@ def create_panorama(cam1_left_path, cam1_right_path, cam2_left_path, cam2_right_
 
 # Use to generate batch panoramas
 def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir, output_dir, 
-                   orientation_csv_path=None, apply_rotation=True):
+                orientation_csv_path=None, apply_rotation=True):
     """
     Finds all corresponding sets of four images and stitches them into panoramas.
     Optionally applies orientation-based rotation if CSV path is provided.

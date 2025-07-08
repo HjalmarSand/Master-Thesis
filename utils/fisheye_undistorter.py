@@ -28,7 +28,7 @@ def _process_single_image_wrapper(args):
     (undistorter_instance, input_path, output_dir_left, output_dir_right,
     output_width, output_height, rectilinear_fov_degrees,
     horizontal_angle_offset_degrees, vertical_angle_offset_degrees,
-    rotation_degrees) = args
+    rotation_degrees, horizon_bend_correction) = args
 
     filename = os.path.basename(input_path)
 
@@ -44,7 +44,8 @@ def _process_single_image_wrapper(args):
             rectilinear_fov_degrees,
             horizontal_angle_offset_degrees,
             vertical_angle_offset_degrees,
-            rotation_degrees
+            rotation_degrees,
+            horizon_bend_correction
         )
 
         original_stem, extension = os.path.splitext(filename)
@@ -175,7 +176,8 @@ class FisheyeUndistorter:
     def undistort_image(self, fisheye_image,
                         output_width=None, output_height=None,
                         output_rectilinear_fov_degrees=90,
-                        yaw_degrees=0.0, pitch_degrees=0.0, roll_degrees=0.0):
+                        yaw_degrees=0.0, pitch_degrees=0.0, roll_degrees=0.0,
+                        horizon_bend_correction = 0.0):
         H_input_img, W_input_img = fisheye_image.shape[:2]
 
         if output_width is None: 
@@ -246,6 +248,22 @@ class FisheyeUndistorter:
         # 8. Calculate the source fisheye coordinates (u_remap, v_remap) for all pixels
         map_x_remap = self.cx_input + distorted_radius_pixels * np.cos(alpha_fisheye)
         map_y_remap = self.cy_input + distorted_radius_pixels * np.sin(alpha_fisheye)
+
+
+        if horizon_bend_correction != 0.0:
+            # Calculate the absolute horizontal angle for each pixel in the output view
+            # This correctly finds the angle relative to the fisheye's true center.
+            abs_yaw_rad = np.arctan2(ray_x_rect, f_out_pixels) + yaw_rad
+            
+            # Apply a vertical shift using a cosine function.
+            # This applies maximum correction at the center (0 deg) and zero at the sides (+/- 90 deg).
+            # A POSITIVE correction value will "push down" the center to fix the /\ peak.
+            y_shift = horizon_bend_correction * np.cos(abs_yaw_rad)
+            
+            # Subtract the shift from the vertical map to sample from a HIGHER
+            # pixel coordinate (smaller Y value) in the source image. This has
+            # the effect of pushing the final horizon DOWN.
+            map_y_remap = map_y_remap - y_shift
         
         # Ensure maps are float32 for cv2.remap
         map_x_remap = map_x_remap.astype(np.float32)
@@ -261,7 +279,8 @@ class FisheyeUndistorter:
                                         rectilinear_fov_degrees=90,
                                         horizontal_angle_offset_degrees=45,
                                         vertical_angle_offset_degrees=0,
-                                        rotation_degrees=0): # This is the roll
+                                        rotation_degrees=0,
+                                        horizon_bend_correction=0.0): # This is the roll
         left_yaw_degrees = -horizontal_angle_offset_degrees
         right_yaw_degrees = horizontal_angle_offset_degrees
 
@@ -272,7 +291,8 @@ class FisheyeUndistorter:
             output_rectilinear_fov_degrees=rectilinear_fov_degrees,
             yaw_degrees=left_yaw_degrees, # Virtual camera yaw for left view
             pitch_degrees=vertical_angle_offset_degrees,
-            roll_degrees=rotation_degrees # Virtual camera roll
+            roll_degrees=rotation_degrees, # Virtual camera roll
+            horizon_bend_correction=horizon_bend_correction
         )
 
         right_view = self.undistort_image(
@@ -282,30 +302,18 @@ class FisheyeUndistorter:
             output_rectilinear_fov_degrees=rectilinear_fov_degrees,
             yaw_degrees=right_yaw_degrees, # Virtual camera yaw for right view
             pitch_degrees=vertical_angle_offset_degrees,
-            roll_degrees=rotation_degrees # Virtual camera roll
+            roll_degrees=rotation_degrees, # Virtual camera roll
+            horizon_bend_correction=horizon_bend_correction
         )
         return left_view, right_view
-        
-    # Method for just rolled image
-    def get_roll_corrected_view(self, fisheye_image, output_width, output_height,
-                                rectilinear_fov_degrees=90, roll_degrees=0.0):
-        # This will be a central view with only roll applied
-        return self.undistort_image(
-            fisheye_image,
-            output_width=output_width,
-            output_height=output_height,
-            output_rectilinear_fov_degrees=rectilinear_fov_degrees,
-            yaw_degrees=0.0,  # No yaw
-            pitch_degrees=0.0, # No pitch
-            roll_degrees=roll_degrees # Only roll applied
-        )
 
     def batch_process_images(self, input_dir, output_dir_left, output_dir_right,
                                 output_width, output_height,
                                 rectilinear_fov_degrees=90,
                                 horizontal_angle_offset_degrees=45,
                                 vertical_angle_offset_degrees=0,
-                                rotation_degrees=0):
+                                rotation_degrees=0,
+                                horizon_bend_correction=0.0):
 
         Path(output_dir_left).mkdir(parents=True, exist_ok=True)
         Path(output_dir_right).mkdir(parents=True, exist_ok=True)
@@ -317,7 +325,7 @@ class FisheyeUndistorter:
         args_list = [(self, path, output_dir_left, output_dir_right,
                     output_width, output_height, rectilinear_fov_degrees,
                     horizontal_angle_offset_degrees, vertical_angle_offset_degrees,
-                    rotation_degrees) for path in image_files]
+                    rotation_degrees, horizon_bend_correction) for path in image_files]
 
         # Use about 80% of CPU cores to leave some for system responsiveness
         num_processes = max(1, int(cpu_count() * 0.8))
@@ -363,71 +371,3 @@ class FisheyeUndistorter:
         plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent title overlap
         plt.savefig(output_path)
         print(f"Comparison plot saved to: {output_path}")
-
-def main():
-    input_image_path = os.path.join(constants.CAM1_DISTORTED_FOLDER, 'distorted_cam1_0894.jpg')
-    output_base_dir = 'undistorted_output'
-    output_dir_left = os.path.join(output_base_dir, 'left_views')
-    output_dir_right = os.path.join(output_base_dir, 'right_views')
-    output_plot_dir = os.path.join(output_base_dir, 'plots')
-
-    Path(output_dir_left).mkdir(parents=True, exist_ok=True)
-    Path(output_dir_right).mkdir(parents=True, exist_ok=True)
-    Path(output_plot_dir).mkdir(parents=True, exist_ok=True)
-
-    undistorter = FisheyeUndistorter()
-
-    fisheye_image = cv2.imread(input_image_path)
-
-    if fisheye_image is None:
-        print(f"Error: Could not load image from {input_image_path}. Make sure it's in the same directory.")
-        return
-
-    print(f"Processing image: {input_image_path}")
-
-    output_width = constants.SPLIT_IMG_WIDTH
-    output_height = constants.SPLIT_IMG_HEIGHT
-    rectilinear_fov_degrees = 90
-    horizontal_angle_offset_degrees = 45
-    vertical_angle_offset_degrees = 0
-    
-    # !!! IMPORTANT: Start experimenting with this value ---
-    rotation_degrees = 9
-
-    # Get the roll-corrected central view
-    center_roll_view = undistorter.get_roll_corrected_view(
-        fisheye_image,
-        output_width,
-        output_height,
-        rectilinear_fov_degrees=rectilinear_fov_degrees,
-        roll_degrees=rotation_degrees # Apply the determined roll
-    )
-
-    left_view, right_view = undistorter.undistort_fisheye_to_split_views(
-        fisheye_image,
-        output_width,
-        output_height,
-        rectilinear_fov_degrees=rectilinear_fov_degrees,
-        horizontal_angle_offset_degrees=horizontal_angle_offset_degrees,
-        vertical_angle_offset_degrees=vertical_angle_offset_degrees,
-        rotation_degrees=rotation_degrees
-    )
-
-    filename_stem = Path(input_image_path).stem
-    output_path_left = os.path.join(output_dir_left, f"undistorted_{filename_stem}_left.jpg")
-    output_path_right = os.path.join(output_dir_right, f"undistorted_{filename_stem}_right.jpg")
-    output_plot_path = os.path.join(output_plot_dir, f"comparison_plot_{filename_stem}.png")
-    output_path_center_roll = os.path.join(output_plot_dir, f"undistorted_{filename_stem}_center_roll_only.jpg") # Save separately too
-
-    cv2.imwrite(output_path_left, left_view)
-    cv2.imwrite(output_path_right, right_view)
-    cv2.imwrite(output_path_center_roll, center_roll_view) # Save the center roll view
-
-    print(f"Undistortion complete. Left view saved to: {output_path_left}")
-    print(f"Right view saved to: {output_path_right}")
-    print(f"Center roll-corrected view saved to: {output_path_center_roll}")
-
-    undistorter.save_comparison_plot(fisheye_image, left_view, right_view, center_roll_view, output_plot_path)
-
-if __name__ == "__main__":
-    main()
