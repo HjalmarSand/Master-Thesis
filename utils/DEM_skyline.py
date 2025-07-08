@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pdal
 from PIL import Image
 
@@ -607,7 +608,6 @@ def save_skyline_as_mask(
         f"Generating a North-centered {output_width}x{output_height} mask with a {vertical_fov}° VFOV..."
     )
 
-    # --- DATA REORDERING FOR NORTH-CENTERED PROJECTION ---
     # Find the index closest to 0 degrees (North).
     north_index = np.argmin(np.abs(angles))
 
@@ -623,20 +623,15 @@ def save_skyline_as_mask(
     )
     sort_indices = np.argsort(remapped_for_sort)
 
-    # Apply the sorting to create monotonic angle and elevation arrays
-    # from -180 (South) to +180 (South, via North)
     sorted_angles_neg_pos = remapped_for_sort[sort_indices]
     sorted_elevations = rolled_elevations[sort_indices]
 
-    # Now, create the target azimuths for our output image, from -180 to +180
     output_azimuths = np.linspace(-180, 180, output_width, endpoint=False)
 
     # Interpolate elevations onto this new North-centered grid.
-    # We no longer need the 'period' argument as we've handled the wrap-around manually.
     interpolated_elevations = np.interp(
         output_azimuths, sorted_angles_neg_pos, sorted_elevations
     )
-    # --- END OF REORDERING ---
 
     # Calculate the vertical pixel position of the skyline for each column.
     top_elevation = vertical_fov / 2.0
@@ -659,6 +654,135 @@ def save_skyline_as_mask(
         print(f"North-centered skyline mask successfully saved to: {output_path}")
     except Exception as e:
         print(f"Error saving mask image: {e}")
+
+
+def save_skyline_data(
+    output_path: Path,
+    angles: np.ndarray,
+    elevations: np.ndarray,
+    distances: np.ndarray,
+    skyline_points: np.ndarray,
+):
+    """
+    Saves the numerical skyline data (angles, elevations, etc.) to a CSV file.
+    """
+    print(f"  > Saving numerical skyline data to {output_path.name}")
+    with open(output_path, "w") as f:
+        f.write(
+            "Direction_deg,Elevation_deg,Distance_m,Skyline_X,Skyline_Y,Skyline_Z\n"
+        )
+        for i in range(len(angles)):
+            f.write(
+                f"{angles[i]:.3f},{elevations[i]:.4f},{distances[i]:.3f},"
+                f"{skyline_points[i][0]:.3f},{skyline_points[i][1]:.3f},{skyline_points[i][2]:.3f}\n"
+            )
+
+
+def create_skyline_database(
+    coords_list: List[Tuple[float, float]],
+    base_z: float,
+    output_directory: Path,
+):
+    """
+    Generates a skyline and mask for a list of coordinates and creates a database.
+
+    For each coordinate, it saves a mask PNG and a skyline data CSV, then records
+    these file paths in a master database CSV file.
+
+    Args:
+        coords_list (List[Tuple[float, float]]): A list of (x, y) coordinates to process.
+        base_z (float): The Z-coordinate (height above ground) to use for all viewpoints.
+        output_directory (Path): The directory where all generated files will be stored.
+    """
+    print(f"\n===== STARTING BATCH SKYLINE DATABASE GENERATION =====")
+    print(f"Total coordinates to process: {len(coords_list)}")
+    print(f"Output will be saved in: {output_directory}")
+
+    # Create the output directory if it doesn't exist
+    output_directory.mkdir(parents=True, exist_ok=True)
+    db_path = output_directory / "skyline_database.csv"
+    database_records = []
+
+    # Pre-find LAZ files once to avoid repeating the search
+    all_laz_files = find_laz_files()
+
+    # Loop through each coordinate in the grid
+    for i, (x, y) in enumerate(coords_list):
+        print(
+            f"\n--- Processing Grid Point {i + 1}/{len(coords_list)}: ({x:.2f}, {y:.2f}) ---"
+        )
+
+        viewpoint_coords = (x, y, base_z)
+
+        # Create unique filenames for this grid point's output
+        file_identifier = f"vp_{x:.0f}_{y:.0f}"
+        mask_path = output_directory / f"mask_{file_identifier}.png"
+        data_path = output_directory / f"skyline_{file_identifier}.csv"
+
+        try:
+            # 1. Load relevant point clouds for the current viewpoint
+            combined_points = load_multiple_point_clouds(
+                all_laz_files, viewpoint_coords, SEARCH_RADIUS, MAX_POINTS_PER_FILE
+            )
+
+            # 2. Calculate the skyline
+            angles, elevations, distances, skyline_points = calculate_skyline(
+                combined_points,
+                viewpoint_coords,
+                SEARCH_RADIUS,
+                ANGLE_STEP,
+                MIN_DISTANCE,
+                avg_top_n_points=N_POINTS_TO_AVERAGE,
+            )
+
+            # 3. Save the skyline mask
+            save_skyline_as_mask(
+                angles,
+                elevations,
+                str(mask_path),  # Ensure path is a string for older libs
+                MASK_WIDTH,
+                MASK_HEIGHT,
+                MASK_VFOV_DEGREES,
+            )
+
+            # 4. Save the numerical skyline data
+            save_skyline_data(data_path, angles, elevations, distances, skyline_points)
+
+            # 5. Add a record to our database list
+            record = {
+                "x": x,
+                "y": y,
+                "z": base_z,
+                "mask_path": mask_path.name,
+                "skyline_data_path": data_path.name,
+                "status": "success",
+            }
+            database_records.append(record)
+
+        except Exception as e:
+            print(f"  !!! ERROR processing point ({x:.2f}, {y:.2f}): {e}")
+            # Add a failure record to the database
+            record = {
+                "x": x,
+                "y": y,
+                "z": base_z,
+                "mask_path": "",
+                "skyline_data_path": "",
+                "status": f"failure: {e}",
+            }
+            database_records.append(record)
+            continue  # Move to the next point
+
+    # After the loop, save the collected records into the master database CSV
+    if database_records:
+        print(f"\n--- Batch process finished. Saving database to {db_path} ---")
+        db_df = pd.DataFrame(database_records)
+        db_df.to_csv(db_path, index=False)
+        print("Database saved successfully.")
+    else:
+        print("No coordinates were processed.")
+
+    print("===== BATCH SKYLINE GENERATION COMPLETE =====")
 
 
 def main():
@@ -686,9 +810,6 @@ def main():
 
         print(f"Skyline calculated: {len(angles)} directions")
 
-        # This will now create and show the plots
-
-        # --- ADD THIS BLOCK TO CREATE THE MASK ---
         save_skyline_as_mask(
             angles,
             elevations,
@@ -697,7 +818,6 @@ def main():
             MASK_HEIGHT,
             MASK_VFOV_DEGREES,
         )
-        # --- END OF NEW BLOCK ---
 
         plot_skyline(angles, elevations, distances, viewpoint_coords, len(laz_files))
 
@@ -711,4 +831,31 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Set to True to run the batch process for a grid of coordinates.
+    # Set to False to run the single-point analysis with plotting.
+    RUN_BATCH_MODE = True
+
+    if RUN_BATCH_MODE:
+        # Example: A simple 3x3 grid of coordinates
+        grid_coords = [
+            (613400.0, 6462200.0),
+            (613400.0, 6462250.0),
+            (613400.0, 6462300.0),
+            (613450.0, 6462200.0),
+            (613450.0, 6462250.0),  # Center point
+            (613450.0, 6462300.0),
+            (613500.0, 6462200.0),
+            (613500.0, 6462250.0),
+            (613500.0, 6462300.0),
+        ]
+
+        # Define the directory to store all database files
+        output_db_directory = Path("output/dsm/skyline_database")
+        viewpoint_z_height = 1.5
+
+        # Run the database creation function
+        create_skyline_database(grid_coords, viewpoint_z_height, output_db_directory)
+
+    else:
+        # Run the original single-point analysis
+        main()
