@@ -9,11 +9,7 @@ dino_salad.ckpt
 
 colmap_fisheye_project/
 results/
-<<<<<<< HEAD
-lantmateri_data/
-=======
-DSM_Data
->>>>>>> arvid_dev
+DSM_Data/
 
 *.jpg
 *.jpeg
