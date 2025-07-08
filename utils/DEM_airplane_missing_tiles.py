@@ -1,3 +1,4 @@
+# The airplane images have sqaures of missing tiles, this script visualizes them.
 import geopandas as gpd
 import matplotlib.pyplot as plt
 
@@ -8,7 +9,6 @@ try:
     # Read the shapefile into a GeoDataFrame
     gdf = gpd.read_file(shapefile_path)
 
-    # --- Let's see what's inside ---
     
     # Print the first 5 rows of the attribute table (.dbf content)
     print("Attribute Data:")
