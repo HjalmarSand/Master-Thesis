@@ -1,30 +1,35 @@
-name: exjobb
+# Uses Conda for the base environment and Pip for the ML stack.
+name: exjobb_pip
 channels:
   - conda-forge
-  - pytorch
-  - nvidia
   - defaults
+
 dependencies:
-  - python=3.10 
+  # 1. Core packages to be installed by Conda.
+  - python=3.11
   - geopandas
   - pdal
-  - pytorch
-  - torchvision
-  - torchaudio
-  - transformers
-  - datasets
-  - tokenizers
-  - safetensors
-  - pytorch-cuda=11.8
-  - pandas
-  - numpy
-  - scikit-learn
-  - matplotlib
   - opencv
-  - tqdm
   - pyside6
-  - pip
   - black
   - flake8
+  - pip
+
+  # 2. All other packages will be installed by Pip.
   - pip:
-    - segment-anything==1.0
+    - --extra-index-url https://download.pytorch.org/whl/cu124
+    
+    - torch>=2.6
+    - torchvision
+    - torchaudio
+
+    - transformers
+    - datasets
+    - tokenizers
+    - safetensors
+    - pandas
+    - numpy
+    - scikit-learn
+    - matplotlib
+    - tqdm
+    - segment-anything

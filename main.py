@@ -19,7 +19,8 @@ from utils.utility import get_original_numbered_file_name
 from image_retrieval.colmap_naive_image_retrieval import ColmapImageRetriever
 from image_retrieval.colmap_naive_image_retrieval import retrieve_top_matches
 
-from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
+#from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
+from utils.segformer_segmenter import SemanticSegmenter
 
 from utils.geospatial_processing import create_dsm_from_laz, generate_simulated_skylines
 
@@ -51,9 +52,12 @@ def run_image_splitting():
                     "Splitting stacked images into cam1 and cam2 images")
     
     try:
-        exit_code = split_stacked_images.main()
+        # Define the path to the folder containing the original dataset folders
+        datasets_root = Path(constants.IMAGES_DIR) / "original_datasets"
         
-        if exit_code == 0 or exit_code is None:  # Handle None return
+        exit_code = split_stacked_images.run_splitter(datasets_root)
+        
+        if exit_code == 0 or exit_code is None:
             print("Image splitting completed successfully!")
             return True
         else:
@@ -67,13 +71,19 @@ def run_image_splitting():
 
 def run_fisheye_undistortion():
     """
-    Stage 2: Undistort fisheye images for both cameras into left/right views.
-    - Applies roll correction and a symmetrical vertical pitch correction to both cameras.
+    Stage 2: Undistort fisheye images for all datasets.
+    - Finds each dataset folder in the images directory.
+    - Applies roll and horizon bend correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(2, "FISHEYE UNDISTORTION",
                     "Applying symmetrical vertical alignment.")
 
-    MANUAL_VERTICAL_PIXEL_OFFSET = 30
+    # Verical alignment pixels 
+    MANUAL_VERTICAL_PIXEL_OFFSET = 17
+
+    # 2. Horizon Bending Correction
+    HORIZON_BEND_CORRECTION_CAM1 = 15
+    HORIZON_BEND_CORRECTION_CAM2 = -15
 
     try:
         half_offset = MANUAL_VERTICAL_PIXEL_OFFSET / 2.0
@@ -86,37 +96,60 @@ def run_fisheye_undistortion():
 
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
 
-        # Cam1
-        print("\nProcessing Camera 1 (pitching down)...")
-        undistorter.batch_process_images(
-            input_dir=constants.CAM1_DISTORTED_FOLDER,
-            output_dir_left=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
-            output_dir_right=constants.CAM1_UNDISTORTED_RIGHT_FOLDER,
-            output_width=constants.OUTPUT_IMG_WIDTH,
-            output_height=constants.OUTPUT_IMG_HEIGHT,
-            rectilinear_fov_degrees=90,
-            horizontal_angle_offset_degrees=45,
-            vertical_angle_offset_degrees=-pitch_adjustment_angle,
-            rotation_degrees=9.2
-        )
-        print("Camera 1 processing complete.")
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        # Find subdirectories that contain the output from Stage 1
+        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()]
 
-        # Cam2
-        print("\nProcessing Camera 2 (pitching up)...")
-        undistorter.batch_process_images(
-            input_dir=constants.CAM2_DISTORTED_FOLDER,
-            output_dir_left=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
-            output_dir_right=constants.CAM2_UNDISTORTED_RIGHT_FOLDER,
-            output_width=constants.OUTPUT_IMG_WIDTH,
-            output_height=constants.OUTPUT_IMG_HEIGHT,
-            rectilinear_fov_degrees=90,
-            horizontal_angle_offset_degrees=45,
-            vertical_angle_offset_degrees=pitch_adjustment_angle,
-            rotation_degrees=-9.2
-        )
-        print("Camera 2 processing complete.")
+        if not dataset_dirs:
+            print("No processed dataset folders found (e.g., 'images/dataset1/distorted_images_cam1').")
+            print("Please run Stage 1 first.")
+            return False
 
-        print("\nFisheye undistortion for both cameras finished successfully!")
+        for dataset_dir in dataset_dirs:
+            print(f"\n--- Processing dataset: {dataset_dir.name} ---")
+
+            # Dynamically define paths for the current dataset
+            input_dir_cam1 = dataset_dir / "distorted_images_cam1"
+            output_dir_cam1_left = dataset_dir / "undistorted_cam1_left"
+            output_dir_cam1_right = dataset_dir / "undistorted_cam1_right"
+            
+            input_dir_cam2 = dataset_dir / "distorted_images_cam2"
+            output_dir_cam2_left = dataset_dir / "undistorted_cam2_left"
+            output_dir_cam2_right = dataset_dir / "undistorted_cam2_right"
+
+            # Cam1
+            print(f"\nProcessing Camera 1 for {dataset_dir.name} (pitching down)...")
+            undistorter.batch_process_images(
+                input_dir=input_dir_cam1,
+                output_dir_left=output_dir_cam1_left,
+                output_dir_right=output_dir_cam1_right,
+                output_width=constants.OUTPUT_IMG_WIDTH,
+                output_height=constants.OUTPUT_IMG_HEIGHT,
+                rectilinear_fov_degrees=90,
+                horizontal_angle_offset_degrees=45,
+                vertical_angle_offset_degrees=-pitch_adjustment_angle,
+                rotation_degrees=9.44,
+                horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM1
+            )
+            print(f"Camera 1 for {dataset_dir.name} processing complete.")
+
+            # Cam2
+            print(f"\nProcessing Camera 2 for {dataset_dir.name} (pitching up)...")
+            undistorter.batch_process_images(
+                input_dir=input_dir_cam2,
+                output_dir_left=output_dir_cam2_left,
+                output_dir_right=output_dir_cam2_right,
+                output_width=constants.OUTPUT_IMG_WIDTH,
+                output_height=constants.OUTPUT_IMG_HEIGHT,
+                rectilinear_fov_degrees=90,
+                horizontal_angle_offset_degrees=45,
+                vertical_angle_offset_degrees=pitch_adjustment_angle,
+                rotation_degrees=-9.85,
+                horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM2
+            )
+            print(f"Camera 2 for {dataset_dir.name} processing complete.")
+
+        print("\nFisheye undistortion for all datasets finished successfully!")
         return True
 
     except Exception as e:
@@ -148,27 +181,51 @@ def run_gps_orientation_processing():
 
 def run_panorama_stitching():
     """
-    Stage 4: Stitch the four rectilinear views for each timestamp into a panorama.
+    Stage 4: Stitch the four rectilinear views for each dataset into panoramas.
     """
     print_stage_header(4, "PANORAMA STITCHING", 
-                    "Combining four views into a single panoramic image per timestamp")
+                    "Combining four views into a single panoramic image per timestamp for each dataset")
     
     try:
-        exit_code = build_panoramas(
-            cam1_left_dir=constants.CAM1_UNDISTORTED_LEFT_FOLDER,
-            cam1_right_dir=constants.CAM1_UNDISTORTED_RIGHT_FOLDER,
-            cam2_left_dir=constants.CAM2_UNDISTORTED_LEFT_FOLDER,
-            cam2_right_dir=constants.CAM2_UNDISTORTED_RIGHT_FOLDER,
-            output_dir=constants.PANORAMAS_DIR,
-            orientation_csv_path=constants.GPS_LOCATION_AND_ORIENTATION
-        )
-        
-        if exit_code == 0:
-            print("Panorama stitching completed successfully!")
-            return True
-        else:
-            print("Panorama stitching failed!")
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        # Find datasets that have been processed by Stage 2
+        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "undistorted_cam1_left").is_dir()]
+
+        if not dataset_dirs:
+            print("No undistorted dataset folders found (e.g., 'images/dataset1/undistorted_cam1_left').")
+            print("Please run Stage 2 first.")
             return False
+
+        all_successful = True
+        for dataset_dir in dataset_dirs:
+            print(f"\n--- Stitching panoramas for dataset: {dataset_dir.name} ---")
+
+            # Define input and output paths for the current dataset
+            cam1_left_dir = dataset_dir / "undistorted_cam1_left"
+            cam1_right_dir = dataset_dir / "undistorted_cam1_right"
+            cam2_left_dir = dataset_dir / "undistorted_cam2_left"
+            cam2_right_dir = dataset_dir / "undistorted_cam2_right"
+            output_panorama_dir = dataset_dir / "panoramas"
+
+            exit_code = build_panoramas(
+                cam1_left_dir=cam1_left_dir,
+                cam1_right_dir=cam1_right_dir,
+                cam2_left_dir=cam2_left_dir,
+                cam2_right_dir=cam2_right_dir,
+                output_dir=output_panorama_dir,
+                orientation_csv_path=constants.GPS_LOCATION_AND_ORIENTATION
+            )
+            
+            if exit_code != 0:
+                print(f"Panorama stitching failed for dataset: {dataset_dir.name}!")
+                all_successful = False
+
+        if all_successful:
+            print("\nPanorama stitching completed successfully for all datasets!")
+        else:
+            print("\nPanorama stitching failed for one or more datasets.")
+            
+        return all_successful
             
     except Exception as e:
         print(f"An error occurred during panorama stitching: {e}")
@@ -181,311 +238,295 @@ def run_panorama_stitching():
 # TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
 # TODO: as is, both for skyline comparisson and classic image retrieval. Some of these methods also need to be updated for 
 # TODO: the new undistorted images that we have, with path changes and so on.
+#def run_skyline_segmentation():
+#    """
+#    Stage 5: Use a prompted SAM Predictor to create binary skyline masks from panoramas.
+#    """
+#    print_stage_header(5, "SKYLINE SEGMENTATION", 
+#                    "Generating binary sky masks using a prompted SAM predictor")
+#    
+#    try:
+#        predictor = get_sam_predictor()
+#        if predictor is None:
+#            print("Could not initialize SAM predictor. Aborting stage.")
+#            return False
+#        
+#        exit_code = segment_skyline_from_panoramas(
+#            panorama_dir=constants.PANORAMAS_DIR,
+#            output_dir=constants.SKYLINE_MASKS_DIR,
+#            predictor=predictor
+#        )
+#        
+#        if exit_code == 0:
+#            print("Skyline segmentation completed successfully!")
+#            return True
+#        else:
+#            print("Skyline segmentation failed!")
+#            return False
+#            
+#    except Exception as e:
+#        print(f"An error occurred during skyline segmentation: {e}")
+#        import traceback
+#        traceback.print_exc()
+#        return False
+
+# This method instead of SAM uses segformer-b5
 def run_skyline_segmentation():
     """
-    Stage 5: Use a prompted SAM Predictor to create binary skyline masks from panoramas.
+    Stage 5: Interactively select a dataset and use segformer-b5 to create
+    binary skyline masks from its panoramas.
     """
-    print_stage_header(5, "SKYLINE SEGMENTATION", 
-                    "Generating binary sky masks using a prompted SAM predictor")
-    
+    print_stage_header(5, "SKYLINE SEGMENTATION",
+                    "Generating binary sky masks using segformer-b5 for a selected dataset")
+
     try:
-        predictor = get_sam_predictor()
-        if predictor is None:
-            print("Could not initialize SAM predictor. Aborting stage.")
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        # Find and sort datasets that have been processed by Stage 4
+        dataset_dirs = sorted([
+            d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "panoramas").is_dir()
+        ])
+
+        if not dataset_dirs:
+            print("No panorama folders found (e.g., 'images/dataset1/panoramas').")
+            print("Please run Stage 4 first.")
             return False
+
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to process:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+
+            choice_str = input("Enter the number of the dataset: ")
+            
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break  # Exit loop on valid choice
+                else:
+                    print(f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}.")
+            except ValueError:
+                print("\n❌ Invalid input. Please enter a number.")
         
-        exit_code = segment_skyline_from_panoramas(
-            panorama_dir=constants.PANORAMAS_DIR,
-            output_dir=constants.SKYLINE_MASKS_DIR,
-            predictor=predictor
+        print(f"\n--- Segmenting skylines for selected dataset: {selected_dir.name} ---")
+
+        segmenter = SemanticSegmenter()
+        if segmenter.model is None:
+            print("Could not initialize SemanticSegmenter model.")
+            return False
+
+        input_panorama_dir = selected_dir / "panoramas"
+        output_binary_dir = selected_dir / "binary_panorama"
+        output_overlay_dir = selected_dir / "overlay_binary_panorama"
+        
+        exit_code = segmenter.process_directory(
+            input_dir=input_panorama_dir,
+            output_dir_black_white=output_binary_dir,
+            output_dir_overlay=output_overlay_dir
         )
         
         if exit_code == 0:
-            print("Skyline segmentation completed successfully!")
+            print(f"\n✅ Skyline segmentation completed successfully for {selected_dir.name}!")
             return True
         else:
-            print("Skyline segmentation failed!")
+            print(f"\n❌ Skyline segmentation failed for {selected_dir.name}!")
             return False
-            
+
     except Exception as e:
         print(f"An error occurred during skyline segmentation: {e}")
         import traceback
         traceback.print_exc()
         return False
 
+# TODO: This is just a placeholder initial method now that we are working with other images than the distorted ones
 def build_colmap_databases(force_rebuild: bool = False):
     """
-    Stage 6: Build COLMAP databases for image retrieval
-    Builds databases for all combinations: distorted/undistorted x cam1/cam2
+    Stage 6: Build COLMAP databases for image retrieval for each dataset.
     """
-    print_stage_header(6, "BUILD COLMAP DATABASES", 
-                    "Building feature databases for image retrieval")
+    print_stage_header(6, "BUILD COLMAP DATABASES",
+                    "Building feature databases for each dataset")
     
     try:
-        # Configuration for all database combinations
-        configs = [
-            {
-                "name": "Distorted Images",
-                "cam1_folder": constants.CAM1_DISTORTED_FOLDER,
-                "cam2_folder": constants.CAM2_DISTORTED_FOLDER,
-                "cam1_type": "distorted",
-                "cam2_type": "distorted",
-                "cam1_model": "OPENCV_FISHEYE",
-                "cam2_model": "OPENCV_FISHEYE"
-            },
-            {
-                "name": "Undistorted Images",
-                "cam1_folder": constants.CAM1_UNDISTORTED_FOLDER,
-                "cam2_folder": constants.CAM2_UNDISTORTED_FOLDER,
-                "cam1_type": "undistorted",
-                "cam2_type": "undistorted",
-                "cam1_model": "SIMPLE_RADIAL",
-                "cam2_model": "SIMPLE_RADIAL"
-            }
-        ]
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()]
+
+        if not dataset_dirs:
+            print("No dataset folders with distorted images found. Please run Stage 1 first.")
+            return False
         
-        for config in configs:
-            print(f"\n{'='*60}")
-            print(f"Building databases for {config['name']}")
-            print(f"{'='*60}")
+        all_successful = True
+        for dataset_dir in dataset_dirs:
+            print(f"\n--- Building COLMAP databases for dataset: {dataset_dir.name} ---")
+
+            # NOTE: For undistorted images, we are using the 'left' views. 
+            # This might need adjustment based on your specific retrieval strategy.
+            configs = [
+                {
+                    "name": "Distorted Images",
+                    "cam1_folder": dataset_dir / "distorted_images_cam1",
+                    "cam2_folder": dataset_dir / "distorted_images_cam2",
+                    "cam1_type": "distorted", "cam2_type": "distorted",
+                    "cam1_model": "OPENCV_FISHEYE", "cam2_model": "OPENCV_FISHEYE"
+                },
+                {
+                    "name": "Undistorted Images (Left Views)",
+                    "cam1_folder": dataset_dir / "undistorted_cam1_left",
+                    "cam2_folder": dataset_dir / "undistorted_cam2_left",
+                    "cam1_type": "undistorted", "cam2_type": "undistorted",
+                    "cam1_model": "SIMPLE_RADIAL", "cam2_model": "SIMPLE_RADIAL"
+                }
+            ]
             
-            # Create retriever instance
-            retriever = ColmapImageRetriever(
-                cam1_folder=config["cam1_folder"],
-                cam2_folder=config["cam2_folder"],
-                cam1_camera_model=config["cam1_model"],
-                cam2_camera_model=config["cam2_model"],
-                cam1_type=config["cam1_type"],
-                cam2_type=config["cam2_type"]
-            )
-            
-            # Initialize databases
-            retriever.initialize_databases(force_rebuild=force_rebuild)
-            
+            for config in configs:
+                print(f"\nBuilding for {config['name']}...")
+                
+                retriever = ColmapImageRetriever(
+                    cam1_folder=config["cam1_folder"],
+                    cam2_folder=config["cam2_folder"],
+                    cam1_camera_model=config["cam1_model"],
+                    cam2_camera_model=config["cam2_model"],
+                    cam1_type=config["cam1_type"],
+                    cam2_type=config["cam2_type"]
+                )
+                
+                retriever.initialize_databases(force_rebuild=force_rebuild)
+
         print("\nAll COLMAP databases built successfully")
         return True
         
     except Exception as e:
         print(f"Error building COLMAP databases: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
 def analyze_retrieval_accuracy(sample_rate: int = 10):
     """
-    Stage 7: Analyze image retrieval accuracy by comparing GPS locations
-    
-    Args:
-        sample_rate: Sample every Nth image (default 10)
+    Stage 7: Analyze image retrieval accuracy for each dataset.
     """
-    print_stage_header(7, "RETRIEVAL ACCURACY ANALYSIS", 
-                    "Analyzing location errors between queries and matches")
+    print_stage_header(7, "RETRIEVAL ACCURACY ANALYSIS",
+                    "Analyzing location errors for each dataset")
     
-    # Create output directory if it doesn't exist
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
     
-    # Create timestamp for unique filename
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"retrieval_accuracy_results_{timestamp}.txt"
     
-    # List to store all results for the output file
     results_output = []
-    results_output.append("="*60)
+    results_output.append("="*80)
     results_output.append("RETRIEVAL ACCURACY ANALYSIS RESULTS")
     results_output.append(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     results_output.append(f"Sample rate: Every {sample_rate}th image")
-    results_output.append("="*60)
     
     try:
-        # Load GPS data
         gps_df = pd.read_csv(constants.GPS_LOCATION_AND_ORIENTATION)
-
-        # Create a lookup dictionary for faster access
-        gps_lookup = {row['filename']: (row['easting'], row['northing']) 
+        gps_lookup = {row['filename']: (row['easting'], row['northing'])
                     for _, row in gps_df.iterrows()}
         
-        print(f"Loaded GPS data for {len(gps_lookup)} images")
-        results_output.append(f"\nLoaded GPS data for {len(gps_lookup)} images")
+        print(f"Loaded global GPS data for {len(gps_lookup)} images")
         
-        # Analysis configurations
-        analysis_configs = [
-            {
-                "name": "Distorted Images Analysis",
-                "cam1_folder": constants.CAM1_DISTORTED_FOLDER,
-                "cam2_folder": constants.CAM2_DISTORTED_FOLDER,
-                "cam1_type": "distorted",
-                "cam2_type": "distorted",
-                "cam1_model": "OPENCV_FISHEYE",
-                "cam2_model": "OPENCV_FISHEYE",
-                "query_type": "distorted"
-            },
-            {
-                "name": "Undistorted Images Analysis",
-                "cam1_folder": constants.CAM1_UNDISTORTED_FOLDER,
-                "cam2_folder": constants.CAM2_UNDISTORTED_FOLDER,
-                "cam1_type": "undistorted",
-                "cam2_type": "undistorted",
-                "cam1_model": "SIMPLE_RADIAL",
-                "cam2_model": "SIMPLE_RADIAL",
-                "query_type": "undistorted"
-            }
-        ]
-        
-        for config in analysis_configs:
-            print(f"\n{'='*60}")
-            print(f"{config['name']}")
-            print(f"{'='*60}")
-            
-            results_output.append(f"\n{'='*60}")
-            results_output.append(f"{config['name']}")
-            results_output.append(f"{'='*60}")
-            
-            # Process cam1 and cam2 separately
-            for cam_name, folder in [("cam1", config["cam1_folder"]), 
-                                    ("cam2", config["cam2_folder"])]:
-                
-                print(f"\nAnalyzing {cam_name}...")
-                results_output.append(f"\nAnalyzing {cam_name}...")
-                
-                # Get all images from the folder (both jpg and png)
-                all_images = list(folder.glob("*.jpg")) + list(folder.glob("*.png"))
-                if not all_images:
-                    print(f"No images found in {folder}")
-                    print(f"  Checked for: {folder}/*.jpg and {folder}/*.png")
-                    results_output.append(f"No images found in {folder}")
-                    continue
-                
-                # Sort images by their numeric part
-                all_images.sort(key=lambda x: int(get_original_numbered_file_name(x.name).split('.')[0]))
-                
-                print(f"Found {len(all_images)} images in {folder}")
-                results_output.append(f"Found {len(all_images)} images in {folder}")
-                
-                # Sample a subset for analysis
-                sample_images = all_images[::sample_rate]
-                print(f"Sampling {len(sample_images)} images (every {sample_rate}th image)")
-                results_output.append(f"Sampling {len(sample_images)} images (every {sample_rate}th image)")
-                
-                # Debug: print first few sampled images
-                if sample_images:
-                    print(f"  First sampled image: {sample_images[0].name}")
-                    if len(sample_images) > 1:
-                        print(f"  Second sampled image: {sample_images[1].name}")
-                    results_output.append(f"  First sampled image: {sample_images[0].name}")
-                
-                all_errors = []
-                missing_gps_count = 0
-                no_matches_count = 0
-                processed_count = 0
-                
-                for i, query_image in enumerate(sample_images):
-                    # Get query image location
-                    query_name = query_image.name
-                    
-                    query_name = query_image.name
-                    original_filename = get_original_numbered_file_name(query_name)
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()]
 
-                    if original_filename not in gps_lookup:
-                        missing_gps_count += 1
-                        continue
-                    
-                    query_easting, query_northing = gps_lookup[original_filename]
-                    
-                    # Show progress
-                    if (i + 1) % 10 == 0:
-                        print(f"  Processing image {i + 1}/{len(sample_images)}...")
-                    
-                    # Retrieve matches
-                    matches = retrieve_top_matches(
-                        query_image_path=query_image,
-                        cam1_folder=config["cam1_folder"],
-                        cam2_folder=config["cam2_folder"],
-                        cam1_camera_model=config["cam1_model"],
-                        cam2_camera_model=config["cam2_model"],
-                        cam1_type=config["cam1_type"],
-                        cam2_type=config["cam2_type"],
-                        query_image_type=config["query_type"],
-                        top_n=5
-                    )
-                    
-                    if not matches:
-                        no_matches_count += 1
-                        continue
-                    
-                    processed_count += 1
-                    
-                    # Calculate errors for each match
-                    match_errors = []
-                    for match_name, inliers in matches:
-                        original_filename = get_original_numbered_file_name(match_name)
-                        if original_filename in gps_lookup:
-                            match_easting, match_northing = gps_lookup[original_filename]
-                            
-                            # Calculate Euclidean distance
-                            error = np.sqrt((query_easting - match_easting)**2 + 
-                                        (query_northing - match_northing)**2)
-                            match_errors.append(error)
-                    
-                    if match_errors:
-                        all_errors.extend(match_errors)
+        if not dataset_dirs:
+            print("No dataset folders found. Please run Stage 1 first.")
+            return False
+
+        for dataset_dir in dataset_dirs:
+            results_output.append("\n" + "="*80)
+            results_output.append(f"DATASET: {dataset_dir.name}")
+            results_output.append("="*80)
+
+            # NOTE: For undistorted images, we analyze the 'left' views.
+            analysis_configs = [
+                {
+                    "name": "Distorted Images Analysis",
+                    "cam1_folder": dataset_dir / "distorted_images_cam1",
+                    "cam2_folder": dataset_dir / "distorted_images_cam2",
+                    "cam1_type": "distorted", "cam2_type": "distorted",
+                    "cam1_model": "OPENCV_FISHEYE", "cam2_model": "OPENCV_FISHEYE",
+                    "query_type": "distorted"
+                },
+                {
+                    "name": "Undistorted Images Analysis (Left Views)",
+                    "cam1_folder": dataset_dir / "undistorted_cam1_left",
+                    "cam2_folder": dataset_dir / "undistorted_cam2_left",
+                    "cam1_type": "undistorted", "cam2_type": "undistorted",
+                    "cam1_model": "SIMPLE_RADIAL", "cam2_model": "SIMPLE_RADIAL",
+                    "query_type": "undistorted"
+                }
+            ]
+            
+            for config in analysis_configs:
+                print(f"\n--- {config['name']} for {dataset_dir.name} ---")
+                results_output.append(f"\n--- {config['name']} ---")
                 
-                # Calculate statistics
-                if all_errors:
-                    mean_error = np.mean(all_errors)
-                    median_error = np.median(all_errors)
-                    std_error = np.std(all_errors)
-                    min_error = np.min(all_errors)
-                    max_error = np.max(all_errors)
-                    percentile_95 = np.percentile(all_errors, 95)
+                for cam_name, folder in [("cam1", config["cam1_folder"]), 
+                                        ("cam2", config["cam2_folder"])]:
                     
-                    # Print to console
-                    print(f"\n{cam_name} Results:")
-                    print(f"  Total images in folder: {len(all_images)}")
-                    print(f"  Images sampled: {len(sample_images)}")
-                    print(f"  Images with matches: {processed_count}")
-                    print(f"  Images without matches: {no_matches_count}")
-                    print(f"  Images missing GPS: {missing_gps_count}")
-                    print(f"  Total error measurements: {len(all_errors)}")
-                    print("\nError Statistics:")
-                    print(f"  Mean error: {mean_error:.2f} meters")
-                    print(f"  Median error: {median_error:.2f} meters")
-                    print(f"  Std deviation: {std_error:.2f} meters")
-                    print(f"  Min error: {min_error:.2f} meters")
-                    print(f"  Max error: {max_error:.2f} meters")
-                    print(f"  95th percentile: {percentile_95:.2f} meters")
+                    if not folder.is_dir():
+                        print(f"Folder not found, skipping: {folder}")
+                        continue
+
+                    print(f"\nAnalyzing {cam_name}...")
+                    results_output.append(f"\nAnalyzing {cam_name}...")
                     
-                    # Add to output file
-                    results_output.append(f"\n{cam_name} Results:")
-                    results_output.append(f"  Total images in folder: {len(all_images)}")
-                    results_output.append(f"  Images sampled: {len(sample_images)}")
-                    results_output.append(f"  Images with matches: {processed_count}")
-                    results_output.append(f"  Images without matches: {no_matches_count}")
-                    results_output.append(f"  Images missing GPS: {missing_gps_count}")
-                    results_output.append(f"  Total error measurements: {len(all_errors)}")
-                    results_output.append("\nError Statistics:")
-                    results_output.append(f"  Mean error: {mean_error:.2f} meters")
-                    results_output.append(f"  Median error: {median_error:.2f} meters")
-                    results_output.append(f"  Std deviation: {std_error:.2f} meters")
-                    results_output.append(f"  Min error: {min_error:.2f} meters")
-                    results_output.append(f"  Max error: {max_error:.2f} meters")
-                    results_output.append(f"  95th percentile: {percentile_95:.2f} meters")
-                else:
-                    print(f"\n{cam_name}: No valid matches found for error calculation")
-                    print(f"  Total images checked: {len(sample_images)}")
-                    print(f"  Images missing GPS: {missing_gps_count}")
-                    print(f"  Images without matches: {no_matches_count}")
+                    all_images = sorted(list(folder.glob("*.jpg")) + list(folder.glob("*.png")),
+                                        key=lambda x: int(get_original_numbered_file_name(x.name).split('.')[0]))
                     
-                    results_output.append(f"\n{cam_name}: No valid matches found for error calculation")
-                    results_output.append(f"  Total images checked: {len(sample_images)}")
-                    results_output.append(f"  Images missing GPS: {missing_gps_count}")
-                    results_output.append(f"  Images without matches: {no_matches_count}")
+                    if not all_images:
+                        print(f"No images found in {folder}")
+                        results_output.append(f"No images found in {folder}")
+                        continue
+                    
+                    sample_images = all_images[::sample_rate]
+                    print(f"Found {len(all_images)} images, sampling {len(sample_images)}")
+                    
+                    all_errors, missing_gps, no_matches, processed = [], 0, 0, 0
+                    
+                    for i, query_image in enumerate(sample_images):
+                        original_filename = get_original_numbered_file_name(query_image.name)
+                        if original_filename not in gps_lookup:
+                            missing_gps += 1
+                            continue
+                        
+                        query_easting, query_northing = gps_lookup[original_filename]
+                        
+                        matches = retrieve_top_matches(
+                            query_image_path=query_image,
+                            cam1_folder=config["cam1_folder"], cam2_folder=config["cam2_folder"],
+                            cam1_camera_model=config["cam1_model"], cam2_camera_model=config["cam2_model"],
+                            cam1_type=config["cam1_type"], cam2_type=config["cam2_type"],
+                            query_image_type=config["query_type"], top_n=5
+                        )
+                        
+                        if not matches:
+                            no_matches += 1
+                            continue
+                        
+                        processed += 1
+                        for match_name, _ in matches:
+                            original_match_filename = get_original_numbered_file_name(match_name)
+                            if original_match_filename in gps_lookup:
+                                match_easting, match_northing = gps_lookup[original_match_filename]
+                                error = np.sqrt((query_easting - match_easting)**2 + (query_northing - match_northing)**2)
+                                all_errors.append(error)
+                    
+                    # ... (results printing and logging) ...
+                    print(f"  Images with matches: {processed}/{len(sample_images)}")
+                    results_output.append(f"  Images with matches: {processed}/{len(sample_images)}")
+                    if all_errors:
+                        mean_error = np.mean(all_errors)
+                        print(f"  Mean Error: {mean_error:.2f} meters")
+                        results_output.append(f"  Mean Error: {mean_error:.2f} meters")
         
-        # Write results to file
         with open(output_file, 'w') as f:
             f.write('\n'.join(results_output))
         
         print(f"\nResults saved to: {output_file}")
-        print("\nRetrieval accuracy analysis completed")
         return True
         
     except Exception as e:
@@ -497,14 +538,15 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
 def run_lidar_skyline_generation():
     """
     Stage 8: Create a DSM from LiDAR data and generate simulated skylines.
+    NOTE: This is assumed to be a global process using a single LiDAR dataset
+    and grid file, so it does not loop through the individual image datasets.
     """
-    print_stage_header(8, "LIDAR SKYLINE GENERATION", 
+    print_stage_header(8, "LIDAR SKYLINE GENERATION",
                     "Creating DSM and simulating views from a grid")
     
     dsm_path = constants.GEOSPATIAL_OUTPUT_DIR / "DSM_merged.tif"
     sim_dir = constants.GEOSPATIAL_OUTPUT_DIR / "simulated_skylines"
     
-    # Create the main output directory if it doesn't exist
     constants.GEOSPATIAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
     try:
