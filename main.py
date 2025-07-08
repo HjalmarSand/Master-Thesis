@@ -95,6 +95,18 @@ def run_image_splitting():
         return False
 
 
+# TODO: We should probably move stage 3 to here, and then make the undistortion stage 3 instead. The reason
+# is that right now we do not have any normalization accounting for the rocking of the boat. We could perhaps
+# use the projectory that we find between coordinates in the gps csv to predict the sway of the boat and account 
+# for that in a dynamic roll. This is functionality that needs to be added to fisheye undistorter, where we
+# poll the csv before creating each image to find a roll. Probably we want to view the curve between the gps points 
+# as Bezier curves. 
+# 
+# Perhaps we can come up with a way to identify the angle of horizon dynamically in each image and account for a roll from that
+# but that does not seem like a time worthy approach as we would need to accurately annotate probably thousands of images 
+# and then train a neural network, hoping for good results in a timely manner, with no guarantees. Tuning estimated values from
+# Bezier curves is likely a better use of our time. 
+
 def run_fisheye_undistortion():
     """
     Stage 2: Undistort fisheye images for all datasets.
