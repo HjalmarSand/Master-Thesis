@@ -71,7 +71,7 @@ def create_panorama(cam1_left_path, cam1_right_path, cam2_left_path, cam2_right_
 
     # Validate that all images were loaded successfully
     if any(img is None for img in images):
-        print(f"Warning: Could not load one or more images for stitching. Skipping.")
+        print("Warning: Could not load one or more images for stitching. Skipping.")
         return None
 
     # Validate that all images have the same height for concatenation
