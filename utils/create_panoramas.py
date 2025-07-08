@@ -71,7 +71,7 @@ def create_panorama(cam1_left_path, cam1_right_path, cam2_left_path, cam2_right_
 
     # Validate that all images were loaded successfully
     if any(img is None for img in images):
-        print(f"Warning: Could not load one or more images for stitching. Skipping.")
+        print("Warning: Could not load one or more images for stitching. Skipping.")
         return None
 
     # Validate that all images have the same height for concatenation
@@ -118,7 +118,7 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
                                     for _, row in orientation_df.iterrows()}
                 print(f"Will apply rotation based on orientation data from {orientation_csv_path}")
             else:
-                print(f"Warning: CSV missing required columns (filename, Orientation). Skipping rotation.")
+                print("Warning: CSV missing required columns (filename, Orientation). Skipping rotation.")
                 apply_rotation = False
         except Exception as e:
             print(f"Warning: Could not load orientation CSV: {e}. Skipping rotation.")
