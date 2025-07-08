@@ -1,10 +1,12 @@
+# TODO: Maybe change algorithm to instead of scanning a set of angles upward, find all points that are in that angle horizontally, calculate
+# arctan y/x on them to find the angle. Iterate through the list to save the largest value for the angle and use this as the angle in
+# that direction. 
+
 import pdal
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import json
-import math
-import glob
 from typing import List, Tuple, Optional
 
 LAZ_DIRECTORY = Path("./DSM_Data/cleaned")  

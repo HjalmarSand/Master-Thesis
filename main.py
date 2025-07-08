@@ -63,11 +63,11 @@ def get_undistortion_parameters(dataset_dir: Path) -> dict:
     else:
         # Default parameters for all other datasets
         return {
-            "vertical_offset": 0,
+            "vertical_offset": 17,
             "horizon_bend_cam1": 15,
             "horizon_bend_cam2": -15,
-            "rotation_cam1": 4.35,
-            "rotation_cam2": -4.65
+            "rotation_cam1": 5.93,
+            "rotation_cam2": -6.48
         }
 
 def run_image_splitting():
@@ -269,58 +269,75 @@ def run_gps_orientation_processing():
 
 def run_panorama_stitching():
     """
-    Stage 4: Stitch the four rectilinear views for each dataset into panoramas.
+    Stage 4: Interactively select a dataset and stitch its four rectilinear views into panoramas.
     """
     print_stage_header(4, "PANORAMA STITCHING", 
-                    "Combining four views into a single panoramic image per timestamp for each dataset")
+                    "Combining four views into a single panoramic image per timestamp for a selected dataset")
     
     try:
         datasets_root_dir = Path(constants.IMAGES_DIR)
-        # Find datasets that have been processed by Stage 2
-        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "undistorted_cam1_left").is_dir()]
+        # Find and sort datasets that have been processed by Stage 2
+        dataset_dirs = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "undistorted_cam1_left").is_dir()])
 
         if not dataset_dirs:
             print("No undistorted dataset folders found (e.g., 'images/dataset1/undistorted_cam1_left').")
             print("Please run Stage 2 first.")
             return False
 
-        all_successful = True
-        for dataset_dir in dataset_dirs:
-            print(f"\n--- Stitching panoramas for dataset: {dataset_dir.name} ---")
-
-            orientation_csv_path = dataset_dir / "gps_interpolated_with_orientation.csv"
-            if not orientation_csv_path.is_file():
-                print(f"❌ Orientation CSV not found for {dataset_dir.name} at '{orientation_csv_path}'.")
-                print("   Please run Stage 3 for this dataset first. Skipping panorama stitching.")
-                all_successful = False
-                continue
-
-            # Define input and output paths for the current dataset
-            cam1_left_dir = dataset_dir / "undistorted_cam1_left"
-            cam1_right_dir = dataset_dir / "undistorted_cam1_right"
-            cam2_left_dir = dataset_dir / "undistorted_cam2_left"
-            cam2_right_dir = dataset_dir / "undistorted_cam2_right"
-            output_panorama_dir = dataset_dir / "panoramas"
-
-            exit_code = build_panoramas(
-                cam1_left_dir=cam1_left_dir,
-                cam1_right_dir=cam1_right_dir,
-                cam2_left_dir=cam2_left_dir,
-                cam2_right_dir=cam2_right_dir,
-                output_dir=output_panorama_dir,
-                orientation_csv_path=orientation_csv_path
-            )
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to stitch into panoramas:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
             
-            if exit_code != 0:
-                print(f"Panorama stitching failed for dataset: {dataset_dir.name}!")
-                all_successful = False
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print(f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}.")
+            except ValueError:
+                print("\n❌ Invalid input. Please enter a number.")
 
-        if all_successful:
-            print("\nPanorama stitching completed successfully for all datasets!")
+        print(f"\n--- Stitching panoramas for dataset: {selected_dir.name} ---")
+
+        # Dynamically find the orientation CSV for the selected dataset
+        orientation_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        if not orientation_csv_path.is_file():
+            print(f"❌ Orientation CSV not found for {selected_dir.name} at '{orientation_csv_path}'.")
+            print("   Please run Stage 3 for this dataset first.")
+            return False
+
+        # Define input and output paths for the selected dataset
+        cam1_left_dir = selected_dir / "undistorted_cam1_left"
+        cam1_right_dir = selected_dir / "undistorted_cam1_right"
+        cam2_left_dir = selected_dir / "undistorted_cam2_left"
+        cam2_right_dir = selected_dir / "undistorted_cam2_right"
+        output_panorama_dir = selected_dir / "panoramas"
+        
+        if selected_dir == "dataset1":
+            manual_rotation_offset_deg=16 # TODO: Verify with better calculations
         else:
-            print("\nPanorama stitching failed for one or more datasets.")
-            
-        return all_successful
+            manual_rotation_offset_deg=16 # TODO: Change for the camera setup in dataset 2 and 3
+
+        exit_code = build_panoramas(
+            cam1_left_dir=cam1_left_dir,
+            cam1_right_dir=cam1_right_dir,
+            cam2_left_dir=cam2_left_dir,
+            cam2_right_dir=cam2_right_dir,
+            output_dir=output_panorama_dir,
+            orientation_csv_path=orientation_csv_path,
+            manual_rotation_offset_deg=manual_rotation_offset_deg
+        )
+        
+        if exit_code == 0:
+            print(f"\nPanorama stitching completed successfully for {selected_dir.name}!")
+            return True
+        else:
+            print(f"\nPanorama stitching failed for {selected_dir.name}!")
+            return False
             
     except Exception as e:
         print(f"An error occurred during panorama stitching: {e}")
