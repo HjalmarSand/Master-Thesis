@@ -118,7 +118,7 @@ def process_directory(input_dir, output_dir, z_threshold, overwrite=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clean LAZ files by removing points below a z-threshold"
+        description="Clean LAZ files by removing points below a z-threshold (i.e points that are lower than water)."
     )
     
     parser.add_argument(

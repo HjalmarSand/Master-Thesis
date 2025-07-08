@@ -85,12 +85,12 @@ def create_panorama(cam1_left_path, cam1_right_path, cam2_left_path, cam2_right_
     
     return panorama
 
-# Use to generate batch panoramas
+
 def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir, output_dir, 
-                   orientation_csv_path=None, apply_rotation=True):
+                   orientation_csv_path=None, apply_rotation=True, manual_rotation_offset_deg=16.0): # With our undistortion there seems to be about a 16 degree offset between the boats and the cameras orientation
     """
     Finds all corresponding sets of four images and stitches them into panoramas.
-    Optionally applies orientation-based rotation if CSV path is provided.
+    Optionally applies orientation-based rotation and a manual correction offset.
     
     Args:
         cam1_left_dir (Path): Directory for front-left views.
@@ -100,6 +100,8 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
         output_dir (Path): Directory to save the final panoramas.
         orientation_csv_path (Path, optional): Path to CSV with orientation data.
         apply_rotation (bool): Whether to apply rotation if CSV is provided.
+        manual_rotation_offset_deg (float): Manual angle in degrees to add to every rotation.
+                                            Positive values rotate right, negative values rotate left.
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -111,7 +113,6 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
             orientation_df = pd.read_csv(orientation_csv_path)
             print(f"Loaded orientation data for {len(orientation_df)} entries")
             
-            # Check required columns
             if 'filename' in orientation_df.columns and 'Orientation' in orientation_df.columns:
                 orientation_lookup = {row['filename']: row['Orientation'] 
                                     for _, row in orientation_df.iterrows()}
@@ -125,7 +126,10 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
     elif orientation_csv_path is None and apply_rotation:
         print("No orientation CSV provided. Skipping rotation.")
         apply_rotation = False
-    
+
+    if manual_rotation_offset_deg != 0.0:
+        print(f"Applying a constant manual rotation offset of {manual_rotation_offset_deg}° to all panoramas.")
+
     # Use cam1_left_dir as the reference to find all numbers in the image names as identifier
     base_images = list(Path(cam2_left_dir).glob("*.jpg"))
     if not base_images:
@@ -139,13 +143,11 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
     missing_orientation = 0
 
     for base_image_path in tqdm(base_images, desc="Building Panoramas"):
-        # Extract the original file number (e.g., "0894.jpg")
         original_filename = get_original_numbered_file_name(base_image_path.name)
         if not original_filename:
             tqdm.write(f"Warning: Could not parse numerical identifier from {base_image_path.name}. Skipping.")
             continue
         
-        # Construct the paths for the other three images
         cam1_left_name = f"undistorted_cam1_{Path(original_filename).stem}_left.jpg"
         cam1_right_name = f"undistorted_cam1_{Path(original_filename).stem}_right.jpg"
         cam2_left_name = f"undistorted_cam2_{Path(original_filename).stem}_left.jpg"
@@ -156,28 +158,27 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
         cam2_left_path = Path(cam2_left_dir) / cam2_left_name
         cam2_right_path = Path(cam2_right_dir) / cam2_right_name
 
-        # Check if all four files exist before trying to stitch
         all_paths = [cam2_left_path, cam2_right_path, cam1_left_path, cam1_right_path]
         if not all(p.exists() for p in all_paths):
             tqdm.write(f"Warning: Missing one or more views for {original_filename}. Skipping.")
             continue
 
-        # Create the panorama for this timestamp
         panorama = create_panorama(*all_paths)
         
         if panorama is not None:
             successful_panoramas += 1
             
-            # Apply rotation if orientation data is available
             if apply_rotation and original_filename in orientation_lookup:
                 orientation = orientation_lookup[original_filename]
-                panorama = rotate_panorama_by_orientation(panorama, orientation)
+
+                total_rotation_angle = orientation + manual_rotation_offset_deg
+                
+                panorama = rotate_panorama_by_orientation(panorama, total_rotation_angle)
                 successful_rotations += 1
             elif apply_rotation and original_filename not in orientation_lookup:
                 missing_orientation += 1
                 tqdm.write(f"Warning: No orientation data found for {original_filename}")
             
-            # Save the result
             output_filename = f"panorama_{Path(original_filename).stem}.jpg"
             save_path = output_path / output_filename
             cv2.imwrite(str(save_path), panorama)
