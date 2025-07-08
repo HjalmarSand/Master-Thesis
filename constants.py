@@ -25,7 +25,6 @@ OUTPUT_IMG_HEIGHT = 960
 
 # Distortion parameters CSV path
 DISTORTION_PARAMS_CSV = PROJECT_ROOT / "distortion_parameters.csv"
-GPS_LOCATION_AND_ORIENTATION = PROJECT_ROOT / "gps_interpolated_with_orientation.csv"
 
 # Output directories for various processing stages
 OUTPUT_DIR = PROJECT_ROOT / "output"

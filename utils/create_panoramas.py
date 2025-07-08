@@ -117,7 +117,7 @@ def build_panoramas(cam1_left_dir, cam1_right_dir, cam2_left_dir, cam2_right_dir
                                     for _, row in orientation_df.iterrows()}
                 print(f"Will apply rotation based on orientation data from {orientation_csv_path}")
             else:
-                print(f"Warning: CSV missing required columns (filename, Orientation). Skipping rotation.")
+                print("Warning: CSV missing required columns (filename, Orientation). Skipping rotation.")
                 apply_rotation = False
         except Exception as e:
             print(f"Warning: Could not load orientation CSV: {e}. Skipping rotation.")

@@ -44,6 +44,32 @@ def print_stage_header(stage_num, stage_name, description=""):
     print("-" * 50)
 
 
+def get_undistortion_parameters(dataset_dir: Path) -> dict:
+    """
+    Returns a dictionary of undistortion parameters based on the dataset name.
+    """
+    dataset_name = dataset_dir.name
+    print(f"Getting parameters for '{dataset_name}'...")
+
+    if dataset_name == "dataset1":
+        # Parameters specific to dataset1
+        return {
+            "vertical_offset": 17,
+            "horizon_bend_cam1": 15,
+            "horizon_bend_cam2": -15,
+            "rotation_cam1": 9.44,
+            "rotation_cam2": -9.85
+        }
+    else:
+        # Default parameters for all other datasets
+        return {
+            "vertical_offset": 0,
+            "horizon_bend_cam1": 15,
+            "horizon_bend_cam2": -15,
+            "rotation_cam1": 4.35,
+            "rotation_cam2": -4.65
+        }
+
 def run_image_splitting():
     """
     Stage 1: Split stacked images into individual camera images.
@@ -76,80 +102,93 @@ def run_fisheye_undistortion():
     - Applies roll and horizon bend correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(2, "FISHEYE UNDISTORTION",
-                    "Applying symmetrical vertical alignment.")
-
-    # Verical alignment pixels 
-    MANUAL_VERTICAL_PIXEL_OFFSET = 17
-
-    # 2. Horizon Bending Correction
-    HORIZON_BEND_CORRECTION_CAM1 = 15
-    HORIZON_BEND_CORRECTION_CAM2 = -15
+                    "Applying camera-specific alignment parameters to a selected dataset.")
 
     try:
-        half_offset = MANUAL_VERTICAL_PIXEL_OFFSET / 2.0
-        pitch_adjustment_angle = FisheyeUndistorter.calculate_pitch_correction_from_offset(
-            half_offset,
-            constants.OUTPUT_IMG_WIDTH,
-            90
-        )
-        print(f"\nApplying a symmetrical pitch adjustment of +/- {pitch_adjustment_angle:.4f} degrees to each camera.")
-
-        undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
-
         datasets_root_dir = Path(constants.IMAGES_DIR)
-        # Find subdirectories that contain the output from Stage 1
-        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()]
+        # Find and sort datasets that have been processed by Stage 1
+        dataset_dirs = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()])
 
         if not dataset_dirs:
             print("No processed dataset folders found (e.g., 'images/dataset1/distorted_images_cam1').")
             print("Please run Stage 1 first.")
             return False
 
-        for dataset_dir in dataset_dirs:
-            print(f"\n--- Processing dataset: {dataset_dir.name} ---")
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to process:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
 
-            # Dynamically define paths for the current dataset
-            input_dir_cam1 = dataset_dir / "distorted_images_cam1"
-            output_dir_cam1_left = dataset_dir / "undistorted_cam1_left"
-            output_dir_cam1_right = dataset_dir / "undistorted_cam1_right"
+            choice_str = input("Enter the number of the dataset: ")
             
-            input_dir_cam2 = dataset_dir / "distorted_images_cam2"
-            output_dir_cam2_left = dataset_dir / "undistorted_cam2_left"
-            output_dir_cam2_right = dataset_dir / "undistorted_cam2_right"
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print(f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}.")
+            except ValueError:
+                print("\n❌ Invalid input. Please enter a number.")
 
-            # Cam1
-            print(f"\nProcessing Camera 1 for {dataset_dir.name} (pitching down)...")
-            undistorter.batch_process_images(
-                input_dir=input_dir_cam1,
-                output_dir_left=output_dir_cam1_left,
-                output_dir_right=output_dir_cam1_right,
-                output_width=constants.OUTPUT_IMG_WIDTH,
-                output_height=constants.OUTPUT_IMG_HEIGHT,
-                rectilinear_fov_degrees=90,
-                horizontal_angle_offset_degrees=45,
-                vertical_angle_offset_degrees=-pitch_adjustment_angle,
-                rotation_degrees=9.44,
-                horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM1
-            )
-            print(f"Camera 1 for {dataset_dir.name} processing complete.")
+        print(f"\n--- Processing dataset: {selected_dir.name} ---")
 
-            # Cam2
-            print(f"\nProcessing Camera 2 for {dataset_dir.name} (pitching up)...")
-            undistorter.batch_process_images(
-                input_dir=input_dir_cam2,
-                output_dir_left=output_dir_cam2_left,
-                output_dir_right=output_dir_cam2_right,
-                output_width=constants.OUTPUT_IMG_WIDTH,
-                output_height=constants.OUTPUT_IMG_HEIGHT,
-                rectilinear_fov_degrees=90,
-                horizontal_angle_offset_degrees=45,
-                vertical_angle_offset_degrees=pitch_adjustment_angle,
-                rotation_degrees=-9.85,
-                horizon_bend_correction=HORIZON_BEND_CORRECTION_CAM2
-            )
-            print(f"Camera 2 for {dataset_dir.name} processing complete.")
+        # Initialize the undistorter
+        undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
 
-        print("\nFisheye undistortion for all datasets finished successfully!")
+        # Get the specific parameters for this dataset
+        params = get_undistortion_parameters(selected_dir)
+
+        # Calculate pitch adjustment based on the retrieved parameters
+        half_offset = params['vertical_offset'] / 2.0
+        pitch_adjustment_angle = FisheyeUndistorter.calculate_pitch_correction_from_offset(
+            half_offset,
+            constants.OUTPUT_IMG_WIDTH,
+            90
+        )
+        print(f"Applying pitch adjustment of +/- {pitch_adjustment_angle:.4f} degrees.")
+
+        # Dynamically define paths for the selected dataset
+        input_dir_cam1 = selected_dir / "distorted_images_cam1"
+        output_dir_cam1_left = selected_dir / "undistorted_cam1_left"
+        output_dir_cam1_right = selected_dir / "undistorted_cam1_right"
+        
+        input_dir_cam2 = selected_dir / "distorted_images_cam2"
+        output_dir_cam2_left = selected_dir / "undistorted_cam2_left"
+        output_dir_cam2_right = selected_dir / "undistorted_cam2_right"
+
+        # Process Cam1
+        print(f"\nProcessing Camera 1 for {selected_dir.name} (pitching down)...")
+        undistorter.batch_process_images(
+            input_dir=input_dir_cam1,
+            output_dir_left=output_dir_cam1_left,
+            output_dir_right=output_dir_cam1_right,
+            output_width=constants.OUTPUT_IMG_WIDTH,
+            output_height=constants.OUTPUT_IMG_HEIGHT,
+            rectilinear_fov_degrees=90,
+            horizontal_angle_offset_degrees=45,
+            vertical_angle_offset_degrees=-pitch_adjustment_angle,
+            rotation_degrees=params['rotation_cam1'],
+            horizon_bend_correction=params['horizon_bend_cam1']
+        )
+        
+        # Process Cam2
+        print(f"\nProcessing Camera 2 for {selected_dir.name} (pitching up)...")
+        undistorter.batch_process_images(
+            input_dir=input_dir_cam2,
+            output_dir_left=output_dir_cam2_left,
+            output_dir_right=output_dir_cam2_right,
+            output_width=constants.OUTPUT_IMG_WIDTH,
+            output_height=constants.OUTPUT_IMG_HEIGHT,
+            rectilinear_fov_degrees=90,
+            horizontal_angle_offset_degrees=45,
+            vertical_angle_offset_degrees=pitch_adjustment_angle,
+            rotation_degrees=params['rotation_cam2'],
+            horizon_bend_correction=params['horizon_bend_cam2']
+        )
+
+        print(f"\n✅ Fisheye undistortion for '{selected_dir.name}' finished successfully!")
         return True
 
     except Exception as e:
@@ -160,23 +199,72 @@ def run_fisheye_undistortion():
     
 def run_gps_orientation_processing():
     """
-    Stage 3: Process GPS and orientation data.
+    Stage 3: Interactively select a dataset and process its GPS data to calculate orientation.
     """
     print_stage_header(3, "GPS & ORIENTATION PROCESSING", 
-                    "Processing GPS coordinates and orientation data")
+                    "Calculates orientation from GPS data for a selected dataset.")
     
     try:
-        exit_code = orientation_path_from_gps.main() #TODO:down the line we fix this, there is no main function right now
+        INPUT_CSV_NAME = "gps_interpolated.csv"
+        source_datasets_dir = Path(constants.IMAGES_DIR) / "original_datasets"
         
-        if exit_code == 0:
-            print("GPS orientation processing completed successfully!")
-            return True
-        else:
-            print("GPS orientation processing failed!")
+        available_datasets = sorted([
+            d for d in source_datasets_dir.iterdir() if d.is_dir() and (d / INPUT_CSV_NAME).is_file()
+        ])
+
+        if not available_datasets:
+            print(f"No source dataset folders found containing '{INPUT_CSV_NAME}'. Searched in: {source_datasets_dir}")
             return False
+
+        selected_source_dir = None
+        while True:
+            print("\nPlease select a source dataset to process for GPS orientation:")
+            for i, dir_path in enumerate(available_datasets):
+                print(f"  [{i}]: {dir_path.name}")
             
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(available_datasets):
+                    selected_source_dir = available_datasets[choice_idx]
+                    break
+                else:
+                    print(f"\n❌ Invalid input. Please enter a number between 0 and {len(available_datasets) - 1}.")
+            except ValueError:
+                print("\n❌ Invalid input. Please enter a number.")
+        
+        print(f"\n--- Processing GPS data for: {selected_source_dir.name} ---")
+
+        input_csv_path = selected_source_dir / INPUT_CSV_NAME
+        output_dir = Path(constants.IMAGES_DIR) / selected_source_dir.name
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        output_csv_path = output_dir / f"{input_csv_path.stem}_with_orientation.csv"
+        output_plot_path = output_dir / f"{input_csv_path.stem}_trajectory.png"
+
+        print(f"Reading GPS data from: {input_csv_path}")
+        df = pd.read_csv(input_csv_path)
+
+        print("Calculating orientation...")
+        df['Orientation'] = orientation_path_from_gps.calculate_orientation(df)
+
+        print(f"Saving data with orientation to: {output_csv_path}")
+        df.to_csv(output_csv_path, index=False, float_format='%.3f')
+
+        orientation_path_from_gps.plot_trajectory(
+            df, title_suffix=f"from {selected_source_dir.name}", save_path=output_plot_path
+        )
+
+        print(f"\n✅ GPS orientation processing for '{selected_source_dir.name}' complete.")
+        return True
+
+    except FileNotFoundError as e:
+        print(f"\n❌ ERROR: Could not find file: {e}")
+        return False
     except Exception as e:
-        print(f"Error during GPS orientation processing: {e}")
+        print(f"\n❌ An error occurred during GPS orientation processing: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def run_panorama_stitching():
@@ -200,6 +288,13 @@ def run_panorama_stitching():
         for dataset_dir in dataset_dirs:
             print(f"\n--- Stitching panoramas for dataset: {dataset_dir.name} ---")
 
+            orientation_csv_path = dataset_dir / "gps_interpolated_with_orientation.csv"
+            if not orientation_csv_path.is_file():
+                print(f"❌ Orientation CSV not found for {dataset_dir.name} at '{orientation_csv_path}'.")
+                print("   Please run Stage 3 for this dataset first. Skipping panorama stitching.")
+                all_successful = False
+                continue
+
             # Define input and output paths for the current dataset
             cam1_left_dir = dataset_dir / "undistorted_cam1_left"
             cam1_right_dir = dataset_dir / "undistorted_cam1_right"
@@ -213,7 +308,7 @@ def run_panorama_stitching():
                 cam2_left_dir=cam2_left_dir,
                 cam2_right_dir=cam2_right_dir,
                 output_dir=output_panorama_dir,
-                orientation_csv_path=constants.GPS_LOCATION_AND_ORIENTATION
+                orientation_csv_path=orientation_csv_path
             )
             
             if exit_code != 0:
@@ -422,14 +517,8 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
     results_output.append(f"Sample rate: Every {sample_rate}th image")
     
     try:
-        gps_df = pd.read_csv(constants.GPS_LOCATION_AND_ORIENTATION)
-        gps_lookup = {row['filename']: (row['easting'], row['northing'])
-                    for _, row in gps_df.iterrows()}
-        
-        print(f"Loaded global GPS data for {len(gps_lookup)} images")
-        
         datasets_root_dir = Path(constants.IMAGES_DIR)
-        dataset_dirs = [d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()]
+        dataset_dirs = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir() and (d / "distorted_images_cam1").is_dir()])
 
         if not dataset_dirs:
             print("No dataset folders found. Please run Stage 1 first.")
@@ -439,6 +528,19 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
             results_output.append("\n" + "="*80)
             results_output.append(f"DATASET: {dataset_dir.name}")
             results_output.append("="*80)
+
+            # Load the specific orientation CSV for this dataset
+            orientation_csv_path = dataset_dir / "gps_interpolated_with_orientation.csv"
+            if not orientation_csv_path.is_file():
+                print(f"❌ Orientation CSV not found for {dataset_dir.name}. Skipping analysis.")
+                results_output.append("Orientation CSV not found. Skipping analysis for this dataset.")
+                continue
+
+            print(f"Loading GPS data for {dataset_dir.name} from {orientation_csv_path}...")
+            gps_df = pd.read_csv(orientation_csv_path)
+            gps_lookup = {row['filename']: (row['easting'], row['northing'])
+                        for _, row in gps_df.iterrows()}
+            results_output.append(f"Loaded GPS data for {len(gps_lookup)} images.")
 
             # NOTE: For undistorted images, we analyze the 'left' views.
             analysis_configs = [

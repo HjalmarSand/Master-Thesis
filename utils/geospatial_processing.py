@@ -31,7 +31,7 @@ def create_dsm_from_laz(laz_dir: Path, output_dsm_path: Path, resolution: float 
         print("Error: No .laz files found in the specified directory.")
         return False
     
-    print(f"Found .laz files. Will process them as a stream.")
+    print("Found .laz files. Will process them as a stream.")
     
     # Create the parent directory for the output if it doesn't exist
     output_dsm_path.parent.mkdir(parents=True, exist_ok=True)
