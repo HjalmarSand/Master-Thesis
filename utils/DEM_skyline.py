@@ -7,17 +7,17 @@ import math
 import glob
 from typing import List, Tuple, Optional
 
-LAZ_DIRECTORY = Path("./DSM_Data/cleaned")  
+LAZ_DIRECTORY = Path("./DSM_Data/uncleaned_laser/64_6")  
 
 SEARCH_RADIUS = 1500.0  # How far away to search for potential skyline points (in meters)
-ANGLE_STEP = 1   # degrees - angular resolution of skyline
+ANGLE_STEP = 1/5120    # degrees - angular resolution of skyline, 5120 is the number of pixels in the panorama
 MIN_DISTANCE = 10.0     # meters - minimum distance to consider (avoid nearby clutter)
 MAX_POINTS_PER_FILE = 5000000  # TODO: Implement this functionality to limit points loaded from each file for memory handling
 N_POINTS_TO_AVERAGE = 10  # Number of highest points to average in each sector (1 = single highest point, >1 = average top N points)
 # Query point
 VIEWPOINT_X = 613491.715  
 VIEWPOINT_Y = 6462211.464   
-VIEWPOINT_Z = 1.7
+VIEWPOINT_Z = 1.5
 
 def find_laz_files() -> List[Path]:
     """Find all LAZ files in the configured directory."""
@@ -44,7 +44,7 @@ def find_laz_files() -> List[Path]:
     return laz_files
 
 def check_file_relevance_from_json(file_path: Path, viewpoint_coords: Tuple[float, float, float], 
-                                search_radius: float) -> bool:
+                                search_radius: float, is_laser_format = True) -> bool:
     """
     Check if a LAZ file contains any points within the search radius by reading its corresponding JSON file.
     This is much faster than loading points since it only reads the spatial bounds from the JSON.
@@ -59,9 +59,13 @@ def check_file_relevance_from_json(file_path: Path, viewpoint_coords: Tuple[floa
     """
     vp_x, vp_y, vp_z = viewpoint_coords
     
-    # Construct json path identical to corresponding LAZ file
+    if is_laser_format:
+        new_name = f"{file_path.stem}_tile{file_path.suffix}"
+
+        file_path = file_path.with_name(new_name)
+            
     json_path = file_path.with_suffix('.json')
-    
+
     try:
         if not json_path.exists():
             print(f"  WARNING: JSON file not found: {json_path.name}")
@@ -74,7 +78,10 @@ def check_file_relevance_from_json(file_path: Path, viewpoint_coords: Tuple[floa
         # Find bounding box coordinates from the JSON metadata
 
         # Extract coordinates from the geometry polygon
-        coordinates = data['geometry']['coordinates'][0]
+        if is_laser_format:
+            coordinates = data['features'][0]['geometry']['coordinates'][0] # In the laser format, the coordinates are nested under 'features'
+        else:
+            coordinates = data['geometry']['coordinates'][0] # In the airplane format, the coordinates are under 'geometry'
         box_coords = coordinates[:-1] #The last coordinate is a repeat of the first
         
         x_coords = [coord[0] for coord in box_coords]
@@ -280,7 +287,7 @@ def get_viewpoint_coordinates():
 
 
 def calculate_skyline(points, viewpoint_coords, search_radius, angle_step=1.0, 
-                      min_distance=10.0, avg_top_n_points=1):
+                    min_distance=10.0, avg_top_n_points=1):
     """
     Calculate skyline from a viewpoint using combined point cloud data.
     
@@ -415,12 +422,13 @@ def plot_skyline(angles, elevations, distances, viewpoint_coords, num_files):
     fig1, ax1 = plt.subplots(figsize=(15, 7))
     
     ax1.plot(plot_angles_sorted, plot_elevations_sorted, 'b-', linewidth=1.5)
-    ax1.fill_between(plot_angles_sorted, plot_elevations_sorted, -15, alpha=0.3, color='skyblue')
+    ax1.fill_between(plot_angles_sorted, plot_elevations_sorted, -40, alpha=0.3, color='skyblue')
     ax1.set_xlabel('Direction (Azimuth)', fontsize=12)
     ax1.set_ylabel('Elevation Angle (degrees)', fontsize=12)
     ax1.set_title('Detailed Skyline Profile (Centered on North) at Viewpoint '+ str(VIEWPOINT_X) + " " + str(VIEWPOINT_Y))
     ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
     ax1.set_xlim(-180, 180)
+    ax1.set_ylim(-40, 45)  # Adjusted to show the full range of elevation angles
     
     ax1_ticks = [-180, -135, -90, -45, 0, 45, 90, 135, 180]
     ax1.set_xticks(ax1_ticks)
@@ -479,7 +487,7 @@ def plot_skyline(angles, elevations, distances, viewpoint_coords, num_files):
     Mean: {distances.mean():.1f} m
     """
     ax4.text(0.05, 0.95, stats_text, transform=ax4.transAxes, fontsize=11, 
-             verticalalignment='top', fontfamily='monospace')
+            verticalalignment='top', fontfamily='monospace')
     
     fig2.suptitle('Skyline Analysis - Supporting Data', fontsize=16)
     fig2.tight_layout(rect=[0, 0, 1, 0.95]) 
