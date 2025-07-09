@@ -7,26 +7,22 @@ import numpy as np
 import pandas as pd
 
 import constants
+from DEM.DEM_skyline import create_and_save_grid, create_skyline_database
+from image_processing import split_stacked_images
+from image_processing.create_panoramas import build_panoramas
+from image_processing.fisheye_undistorter import FisheyeUndistorter
 from image_retrieval.colmap_naive_image_retrieval import (
     ColmapImageRetriever,
     retrieve_top_matches,
 )
-from utils import (
+from skyline_processing import (
     fourier_skyline_encoder,
     fourier_skyline_matcher,
-    orientation_path_from_gps,
-    split_stacked_images,
 )
 
-# from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
-from utils.create_panoramas import build_panoramas
-
-# Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
-from utils.fisheye_undistorter import FisheyeUndistorter
-from utils.DEM_skyline import create_and_save_grid, create_skyline_database
-
 # from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
-from utils.segformer_segmenter import SemanticSegmenter
+from skyline_processing.segformer_segmenter import SemanticSegmenter
+from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
 
 
@@ -417,7 +413,8 @@ def run_panorama_stitching():
 
         traceback.print_exc()
         return False
-    
+
+
 # TODO: Right now we have only implemented for panoramas. We probably want to implement for fisheye images as well.
 # TODO: Above comment is just the start of how some of these methods need to be adapted to make comparissons on fisheye as well
 # TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
@@ -562,7 +559,6 @@ def build_colmap_databases(force_rebuild: bool = False):
             )
             return False
 
-        all_successful = True
         for dataset_dir in dataset_dirs:
             print(
                 f"\n--- Building COLMAP databases for dataset: {dataset_dir.name} ---"
@@ -715,7 +711,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                     all_images = sorted(
                         list(folder.glob("*.jpg")) + list(folder.glob("*.png")),
                         key=lambda x: int(
-                            get_original_numbered_file_name(x.name).split(".")[0]
+                            get_original_numbered_file_name(x.name).split(".")[0]  # type: ignore
                         ),
                     )
 
@@ -810,18 +806,21 @@ def run_lidar_skyline_generation():
     try:
         # This grid file will be used as input for the skyline generation.
         grid_output_path = constants.OBSERVER_GRID_PATH
-        print(f"\n Generating Observer Grid")
+        print("\n Generating Observer Grid")
         print(f"Grid file will be saved to: {grid_output_path}")
 
         create_and_save_grid(
-            start_coords=(613400.0, 6462200.0),  # Bottom-left corner (Easting, Northing)
+            start_coords=(
+                613400.0,
+                6462200.0,
+            ),  # Bottom-left corner (Easting, Northing)
             spacing_meters=50.0,  # Distance between points
             num_points_x=3,  # Number of columns
             num_points_y=3,  # Number of rows
             output_path=grid_output_path,
         )
 
-        print(f"\n Generating Skyline Database from Grid")
+        print("\n Generating Skyline Database from Grid")
         output_db_directory = constants.DEM_OUTPUT_DIR / "skyline_database"
         viewpoint_z_height = 1.5  # Standard camera height in meters
 
@@ -829,7 +828,9 @@ def run_lidar_skyline_generation():
         try:
             grid_df = pd.read_csv(grid_output_path)
             coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
-            print(f"Successfully loaded {len(coords_to_process)} coordinates from grid file.")
+            print(
+                f"Successfully loaded {len(coords_to_process)} coordinates from grid file."
+            )
         except (FileNotFoundError, KeyError) as e:
             print(f"❌ ERROR: Could not read the generated grid file: {e}")
             print("Aborting skyline generation.")
