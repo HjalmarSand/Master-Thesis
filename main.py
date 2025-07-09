@@ -12,8 +12,9 @@ from image_retrieval.colmap_naive_image_retrieval import (
     retrieve_top_matches,
 )
 from utils import (
+    fourier_skyline_encoder,
+    fourier_skyline_matcher,
     orientation_path_from_gps,
-    skyline_fourier_encoding,
     split_stacked_images,
 )
 
@@ -845,23 +846,19 @@ def run_lidar_skyline_generation():
         return False
 
 
-# NOTE: one doubt i have about this fourier encoding is, it will create massive confusion when we have panoramas with similarly
-# shaped islands, but on other locations in the images. now that the encodings are fourier the location for islands no longer
-# matters, only the general shapes
-def run_fourier_skyline_encoding():
+def run_skyline_fourier_encoder():
     """
-    Stage 9: Interactively select a dataset and create Fourier fingerprints
-    for its binary panoramas.
+    Stage 9: Select a dataset and create fingerprint databases in the project root
+    under a new per-dataset directory structure.
     """
     print_stage_header(
         9,
         "SKYLINE FINGERPRINTING",
-        "Generating rotation-invariant fingerprints for a selected dataset's skylines",
+        "Generating 'global' and 'windowed' fingerprint databases.",
     )
 
     try:
         datasets_root_dir = Path(constants.IMAGES_DIR)
-        # Find datasets that have skyline masks
         dataset_dirs = sorted(
             [
                 d
@@ -871,10 +868,7 @@ def run_fourier_skyline_encoding():
         )
 
         if not dataset_dirs:
-            print(
-                "No binary panorama folders found (e.g., 'images/dataset1/binary_panorama')."
-            )
-            print("Please run Stage 5 first.")
+            print("No binary panorama folders found. Please run Stage 5 first.")
             return False
 
         selected_dir = None
@@ -882,9 +876,7 @@ def run_fourier_skyline_encoding():
             print("\nPlease select a dataset to fingerprint:")
             for i, dir_path in enumerate(dataset_dirs):
                 print(f"  [{i}]: {dir_path.name}")
-
             choice_str = input("Enter the number of the dataset: ")
-
             try:
                 choice_idx = int(choice_str)
                 if 0 <= choice_idx < len(dataset_dirs):
@@ -892,26 +884,131 @@ def run_fourier_skyline_encoding():
                     break
                 else:
                     print(
-                        f"\nInvalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
+                        f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
                     )
             except ValueError:
-                print("\nInvalid input. Please enter a number.")
+                print("\n❌ Invalid input. Please enter a number.")
 
         print(f"\n--- Fingerprinting skylines for dataset: {selected_dir.name} ---")
 
         input_binary_dir = selected_dir / "binary_panorama"
-        output_fingerprint_dir = (
-            selected_dir / "fourier_skyline_encodings"
-        )  # New output folder
+        dataset_name = selected_dir.name
 
-        exit_code = skyline_fourier_encoding.create_fingerprints_for_directory(
-            input_dir=input_binary_dir, output_dir=output_fingerprint_dir
+        project_root = Path(__file__).parent
+        dataset_db_dir = project_root / "databases" / dataset_name
+
+        all_successful = True
+
+        print("\nRunning 'global' fingerprinting strategy...")
+        output_global_dir = dataset_db_dir / "global_fourier_fingerprints"
+        global_output_path = output_global_dir / "fingerprints.npz"
+
+        exit_code_global = fourier_skyline_encoder.create_fingerprints_for_directory(
+            input_dir=input_binary_dir,
+            output_filepath=global_output_path,
+            strategy="global",
         )
+        if exit_code_global != 0:
+            all_successful = False
+            print("Global fingerprinting failed.")
 
-        return exit_code == 0
+        print("\nRunning 'windowed' fingerprinting strategy...")
+        output_windowed_dir = dataset_db_dir / "windowed_fourier_fingerprints"
+        windowed_output_path = output_windowed_dir / "fingerprints.npz"
+
+        exit_code_windowed = fourier_skyline_encoder.create_fingerprints_for_directory(
+            input_dir=input_binary_dir,
+            output_filepath=windowed_output_path,
+            strategy="windowed",
+        )
+        if exit_code_windowed != 0:
+            all_successful = False
+            print("Windowed fingerprinting failed.")
+
+        return all_successful
 
     except Exception as e:
         print(f"An error occurred during skyline fingerprinting: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_matching_analysis():
+    """
+    Stage 10: Perform a self-matching analysis on a fingerprint database,
+    showing detailed per-window scores for windowed strategies.
+    """
+    print_stage_header(
+        10,
+        "FINGERPRINT SELF-MATCHING ANALYSIS",
+        "Matching real panoramas against each other to test fingerprint quality.",
+    )
+
+    try:
+        project_root = Path(__file__).parent
+        db_root_dir = project_root / "databases"
+
+        available_fp_files = sorted(list(db_root_dir.glob("*/*/*.npz")))
+        if not available_fp_files:
+            print(
+                f"No fingerprint files found in '{db_root_dir}'. Please run Stage 9 first."
+            )
+            return False
+
+        selected_fp_path = None
+        while True:
+            print("\nPlease select a fingerprint file to analyze:")
+            for i, file_path in enumerate(available_fp_files):
+                print(f"  [{i}]: {file_path.relative_to(project_root)}")
+            choice_str = input("Enter the number of the file: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(available_fp_files):
+                    selected_fp_path = available_fp_files[choice_idx]
+                    break
+                else:
+                    print("❌ Invalid choice.")
+            except ValueError:
+                print("❌ Please enter a number.")
+
+        if "windowed" in str(selected_fp_path):
+            num_windows = 4
+            print(f"\nWindowed strategy detected (using {num_windows} windows).")
+        else:
+            num_windows = 1
+            print("\nGlobal strategy detected (using 1 window).")
+
+        results = fourier_skyline_matcher.run_self_matching(
+            fingerprint_path=selected_fp_path,
+            num_samples=10,
+            top_n=5,
+            num_windows=num_windows,
+        )
+
+        if results:
+            print("\n--- Top 5 Self-Matching Results ---")
+            for result in results:
+                print(f"\n  Query: {result['query']}")
+                if result["top_matches"]:
+                    for match in result["top_matches"]:
+                        # Format the detailed window scores for printing
+                        scores_str = ", ".join(
+                            [f"{s:.3f}" for s in match["window_scores"]]
+                        )
+                        print(
+                            f"    -> Match: {match['match_key']:<25} | Avg Score: {match['avg_score']:.4f} | Window Scores: [{scores_str}]"
+                        )
+                else:
+                    print("    -> No other images found to match against.")
+        else:
+            print("Analysis could not be completed.")
+
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during matching: {e}")
         import traceback
 
         traceback.print_exc()
@@ -964,8 +1061,11 @@ def main():
             lambda: analyze_retrieval_accuracy(args.sample_rate),
         ),
         8: ("Generate LiDAR Skylines", run_lidar_skyline_generation),
-        9: ("Fourier Encode Binary Skylines", run_fourier_skyline_encoding),
-        # 9: ("Match Skylines", run_skyline_matching) # TODO: Implement this
+        9: ("Fourier Encode Binary Skylines", run_skyline_fourier_encoder),
+        10: (
+            "Fourier Skyline Matching",
+            run_matching_analysis,
+        ),  # TODO: This is just the start, later we want to implement encoding and matching for CNN feature extractions
     }
 
     # Determine which stages to run
