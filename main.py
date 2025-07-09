@@ -20,10 +20,10 @@ from utils import (
 
 # from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
 from utils.create_panoramas import build_panoramas
+from utils.DEM_skyline import create_and_save_grid, create_skyline_database
 
 # Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
 from utils.fisheye_undistorter import FisheyeUndistorter
-from utils.DEM_skyline import create_and_save_grid, create_skyline_database
 
 # from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
 from utils.segformer_segmenter import SemanticSegmenter
@@ -417,7 +417,8 @@ def run_panorama_stitching():
 
         traceback.print_exc()
         return False
-    
+
+
 # TODO: Right now we have only implemented for panoramas. We probably want to implement for fisheye images as well.
 # TODO: Above comment is just the start of how some of these methods need to be adapted to make comparissons on fisheye as well
 # TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
@@ -811,10 +812,13 @@ def run_lidar_skyline_generation():
         # This grid file will be used as input for the skyline generation.
         grid_output_path = constants.OBSERVER_GRID_PATH
         print(f"\n Generating Observer Grid")
-        print(f"Grid file will be saved to: {grid_output_path}")
+        # print(f"Grid file will be saved to: {grid_output_path}")
 
         create_and_save_grid(
-            start_coords=(613400.0, 6462200.0),  # Bottom-left corner (Easting, Northing)
+            start_coords=(
+                611597.725,
+                6458055.924,
+            ),  # Bottom-left corner (Easting, Northing)
             spacing_meters=50.0,  # Distance between points
             num_points_x=3,  # Number of columns
             num_points_y=3,  # Number of rows
@@ -829,9 +833,11 @@ def run_lidar_skyline_generation():
         try:
             grid_df = pd.read_csv(grid_output_path)
             coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
-            print(f"Successfully loaded {len(coords_to_process)} coordinates from grid file.")
+            print(
+                f"Successfully loaded {len(coords_to_process)} coordinates from grid file."
+            )
         except (FileNotFoundError, KeyError) as e:
-            print(f"❌ ERROR: Could not read the generated grid file: {e}")
+            print(f" ERROR: Could not read the generated grid file: {e}")
             print("Aborting skyline generation.")
             return False
 
@@ -842,11 +848,11 @@ def run_lidar_skyline_generation():
             output_directory=output_db_directory,
         )
 
-        print("\n✅ LiDAR skyline database generation completed successfully!")
+        print("\n LiDAR skyline database generation completed successfully!")
         return True
 
     except Exception as e:
-        print(f"❌ An error occurred during LiDAR processing: {e}")
+        print(f" An error occurred during LiDAR processing: {e}")
         import traceback
 
         traceback.print_exc()
