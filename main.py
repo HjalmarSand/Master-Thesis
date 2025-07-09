@@ -417,6 +417,43 @@ def run_panorama_stitching():
 
         traceback.print_exc()
         return False
+    
+# TODO: Right now we have only implemented for panoramas. We probably want to implement for fisheye images as well.
+# TODO: Above comment is just the start of how some of these methods need to be adapted to make comparissons on fisheye as well
+# TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
+# TODO: as is, both for skyline comparisson and classic image retrieval. Some of these methods also need to be updated for
+# TODO: the new undistorted images that we have, with path changes and so on.
+# def run_skyline_segmentation():
+#    """
+#    Stage 5: Use a prompted SAM Predictor to create binary skyline masks from panoramas.
+#    """
+#    print_stage_header(5, "SKYLINE SEGMENTATION",
+#                    "Generating binary sky masks using a prompted SAM predictor")
+#
+#    try:
+#        predictor = get_sam_predictor()
+#        if predictor is None:
+#            print("Could not initialize SAM predictor. Aborting stage.")
+#            return False
+#
+#        exit_code = segment_skyline_from_panoramas(
+#            panorama_dir=constants.PANORAMAS_DIR,
+#            output_dir=constants.SKYLINE_MASKS_DIR,
+#            predictor=predictor
+#        )
+#
+#        if exit_code == 0:
+#            print("Skyline segmentation completed successfully!")
+#            return True
+#        else:
+#            print("Skyline segmentation failed!")
+#            return False
+#
+#    except Exception as e:
+#        print(f"An error occurred during skyline segmentation: {e}")
+#        import traceback
+#        traceback.print_exc()
+#        return False
 
 
 # This method instead of SAM uses segformer-b5
