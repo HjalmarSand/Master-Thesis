@@ -23,7 +23,7 @@ from utils.create_panoramas import build_panoramas
 
 # Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
 from utils.fisheye_undistorter import FisheyeUndistorter
-from utils.geospatial_processing import create_dsm_from_laz, generate_simulated_skylines
+from utils.DEM_skyline import create_and_save_grid, create_skyline_database
 
 # from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
 from utils.segformer_segmenter import SemanticSegmenter
@@ -419,44 +419,6 @@ def run_panorama_stitching():
         return False
 
 
-# TODO: Right now we have only implemented for panoramas. We probably want to implement for fisheye images as well.
-# TODO: Above comment is just the start of how some of these methods need to be adapted to make comparissons on fisheye as well
-# TODO: For example, we might want to stitch together the fisheye images into panoramas as well to compare performance, or keep
-# TODO: as is, both for skyline comparisson and classic image retrieval. Some of these methods also need to be updated for
-# TODO: the new undistorted images that we have, with path changes and so on.
-# def run_skyline_segmentation():
-#    """
-#    Stage 5: Use a prompted SAM Predictor to create binary skyline masks from panoramas.
-#    """
-#    print_stage_header(5, "SKYLINE SEGMENTATION",
-#                    "Generating binary sky masks using a prompted SAM predictor")
-#
-#    try:
-#        predictor = get_sam_predictor()
-#        if predictor is None:
-#            print("Could not initialize SAM predictor. Aborting stage.")
-#            return False
-#
-#        exit_code = segment_skyline_from_panoramas(
-#            panorama_dir=constants.PANORAMAS_DIR,
-#            output_dir=constants.SKYLINE_MASKS_DIR,
-#            predictor=predictor
-#        )
-#
-#        if exit_code == 0:
-#            print("Skyline segmentation completed successfully!")
-#            return True
-#        else:
-#            print("Skyline segmentation failed!")
-#            return False
-#
-#    except Exception as e:
-#        print(f"An error occurred during skyline segmentation: {e}")
-#        import traceback
-#        traceback.print_exc()
-#        return False
-
-
 # This method instead of SAM uses segformer-b5
 def run_skyline_segmentation():
     """
@@ -541,7 +503,6 @@ def run_skyline_segmentation():
         return False
 
 
-# TODO: This is just a placeholder initial method now that we are working with other images than the distorted ones
 def build_colmap_databases(force_rebuild: bool = False):
     """
     Stage 6: Build COLMAP databases for image retrieval for each dataset.
@@ -571,7 +532,6 @@ def build_colmap_databases(force_rebuild: bool = False):
             )
 
             # NOTE: For undistorted images, we are using the 'left' views.
-            # This might need adjustment based on your specific retrieval strategy.
             configs = [
                 {
                     "name": "Distorted Images",
@@ -657,7 +617,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
             results_output.append(f"DATASET: {dataset_dir.name}")
             results_output.append("=" * 80)
 
-            # Load the specific orientation CSV for this dataset
             orientation_csv_path = dataset_dir / "gps_interpolated_with_orientation.csv"
             if not orientation_csv_path.is_file():
                 print(
@@ -678,7 +637,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
             }
             results_output.append(f"Loaded GPS data for {len(gps_lookup)} images.")
 
-            # NOTE: For undistorted images, we analyze the 'left' views.
             analysis_configs = [
                 {
                     "name": "Distorted Images Analysis",
@@ -777,7 +735,6 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
                                 )
                                 all_errors.append(error)
 
-                    # ... (results printing and logging) ...
                     print(f"  Images with matches: {processed}/{len(sample_images)}")
                     results_output.append(
                         f"  Images with matches: {processed}/{len(sample_images)}"
@@ -803,43 +760,56 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
 
 def run_lidar_skyline_generation():
     """
-    Stage 8: Create a DSM from LiDAR data and generate simulated skylines.
-    NOTE: This is assumed to be a global process using a single LiDAR dataset
-    and grid file, so it does not loop through the individual image datasets.
+    Stage 8: Generate a LiDAR skyline database.
+    This stage first creates a grid of observer points and then generates a
+    skyline mask and data for each point using the raw LAZ files.
     """
     print_stage_header(
-        8, "LIDAR SKYLINE GENERATION", "Creating DSM and simulating views from a grid"
+        8,
+        "LIDAR SKYLINE DATABASE GENERATION",
+        "Creating a grid and then generating skyline data from LAZ files.",
     )
 
-    dsm_path = constants.GEOSPATIAL_OUTPUT_DIR / "DSM_merged.tif"
-    sim_dir = constants.GEOSPATIAL_OUTPUT_DIR / "simulated_skylines"
-
-    constants.GEOSPATIAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
     try:
-        print("\nPart 1: Creating DSM from LAZ files")
-        dsm_success = create_dsm_from_laz(
-            laz_dir=constants.LIDAR_DATA_DIR, output_dsm_path=dsm_path, resolution=1.0
+        # This grid file will be used as input for the skyline generation.
+        grid_output_path = constants.OBSERVER_GRID_PATH
+        print(f"\n Generating Observer Grid")
+        print(f"Grid file will be saved to: {grid_output_path}")
+
+        create_and_save_grid(
+            start_coords=(613400.0, 6462200.0),  # Bottom-left corner (Easting, Northing)
+            spacing_meters=50.0,  # Distance between points
+            num_points_x=3,  # Number of columns
+            num_points_y=3,  # Number of rows
+            output_path=grid_output_path,
         )
-        if not dsm_success:
-            print("DSM creation failed. Aborting stage.")
+
+        print(f"\n Generating Skyline Database from Grid")
+        output_db_directory = constants.DEM_OUTPUT_DIR / "skyline_database"
+        viewpoint_z_height = 1.5  # Standard camera height in meters
+
+        # Load the coordinates from the file we just created
+        try:
+            grid_df = pd.read_csv(grid_output_path)
+            coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
+            print(f"Successfully loaded {len(coords_to_process)} coordinates from grid file.")
+        except (FileNotFoundError, KeyError) as e:
+            print(f"❌ ERROR: Could not read the generated grid file: {e}")
+            print("Aborting skyline generation.")
             return False
 
-        print("\nPart 2: Generating simulated skylines from DSM")
-        skyline_success = generate_simulated_skylines(
-            dsm_path=dsm_path,
-            grid_path=constants.OBSERVER_GRID_PATH,
-            output_dir=sim_dir,
+        # Run the database creation function
+        create_skyline_database(
+            coords_list=coords_to_process,
+            base_z=viewpoint_z_height,
+            output_directory=output_db_directory,
         )
-        if not skyline_success:
-            print("Simulated skyline generation failed.")
-            return False
 
-        print("\nLiDAR skyline generation completed successfully!")
+        print("\n✅ LiDAR skyline database generation completed successfully!")
         return True
 
     except Exception as e:
-        print(f"An error occurred during LiDAR processing: {e}")
+        print(f"❌ An error occurred during LiDAR processing: {e}")
         import traceback
 
         traceback.print_exc()
@@ -993,7 +963,6 @@ def run_matching_analysis():
                 print(f"\n  Query: {result['query']}")
                 if result["top_matches"]:
                     for match in result["top_matches"]:
-                        # Format the detailed window scores for printing
                         scores_str = ", ".join(
                             [f"{s:.3f}" for s in match["window_scores"]]
                         )

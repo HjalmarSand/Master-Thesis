@@ -16,7 +16,7 @@ LIDAR_SKYLINE_RESOLUTION = 64  # The resolution of the skyline will become 5120 
 LIDAR_OUTPUT_DIR = PROJECT_ROOT / "output" / "lidar_skyline"
 
 OBSERVER_GRID_PATH = (
-    PROJECT_ROOT / "data" / "observer_grid.shp"
+    PROJECT_ROOT / "input" / "observer_grid.csv"
 )  # TODO: CREATE THIS FILE IN QGI
 
 PANORAMA_IMG_WIDTH = 5120
@@ -39,6 +39,6 @@ PLOTS_DIR = OUTPUT_DIR / "plots"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
 # Simulated skylines and .tif file will here
-GEOSPATIAL_OUTPUT_DIR = OUTPUT_DIR / "geospatial"
+DEM_OUTPUT_DIR = OUTPUT_DIR / "DEM"
 
 MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl"

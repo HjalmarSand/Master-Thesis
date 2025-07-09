@@ -31,7 +31,7 @@ VIEWPOINT_Y = 6462211.464
 VIEWPOINT_Z = 1.5
 
 
-MASK_OUTPUT_PATH = "skyline_mask.png"  # Filename for the output mask
+MASK_OUTPUT_PATH = "skyline_mask.png"  # Filename for the output mask, only works in single query mode
 MASK_WIDTH = constants.PANORAMA_IMG_WIDTH  # Desired width of the mask in pixels
 MASK_HEIGHT = constants.PANORAMA_IMG_HEIGHT  # Desired height of the mask in pixels
 
@@ -584,7 +584,7 @@ def save_skyline_as_mask(
     output_path: str,
     output_width: int,
     output_height: int,
-    vertical_fov: float,
+    vertical_fov: float = 90.0,  # A sensible default VFOV for the mask
 ):
     """
     Creates a binary mask from the skyline data and saves it as a PNG image.
@@ -592,7 +592,7 @@ def save_skyline_as_mask(
     The mask is generated in a North-centered projection, where the center column
     is North (0°), the left side is West, and the right side is East.
 
-    The mask will have values of 1 for pixels above the skyline (sky) and 255
+    The mask will have values of 255 (white) for pixels above the skyline (sky) and 0 (black)
     for pixels on or below the skyline (ground/objects).
 
     Args:
@@ -604,55 +604,66 @@ def save_skyline_as_mask(
         vertical_fov (float): The total vertical field of view in degrees for the mask.
     """
     print(
-        f"Generating a North-centered {output_width}x{output_height} mask with a {vertical_fov}° VFOV..."
+        f"  > Generating North-centered {output_width}x{output_height} mask with {vertical_fov}° VFOV..."
     )
 
-    # Find the index closest to 0 degrees (North).
-    north_index = np.argmin(np.abs(angles))
+    # The goal is to create an array of elevation values, one for each column of the output image.
+    # The image represents a 360-degree view, North-centered.
+    # So, the x-axis of the image corresponds to azimuths from -180 (South, via West) to +180 (South, via East).
 
-    # "Roll" the arrays so that the North data point is at the beginning.
-    # This effectively makes the data run from North, through East, South, West, and back to North.
-    rolled_angles = np.roll(angles, -north_index)
-    rolled_elevations = np.roll(elevations, -north_index)
+    # Sort the calculated skyline by angle to ensure correct interpolation.
+    sort_indices = np.argsort(angles)
+    sorted_angles = angles[sort_indices]
+    sorted_elevations = elevations[sort_indices]
 
-    # The angles now might not be perfectly monotonic (e.g., 0, 1, ..., 359, 358).
-    # We fix this by converting angles > 180 to their negative equivalent for sorting.
-    remapped_for_sort = np.where(
-        rolled_angles >= 180, rolled_angles - 360, rolled_angles
+    # Create the target azimuths for our output image (from -180 to 180).
+    # We need to wrap the angles for interpolation. Example: to interpolate between 359° and 1°, we need points at 359° and 361°.
+    # So we add points at the beginning and end.
+    wrapped_angles = np.concatenate(
+        ([sorted_angles[-1] - 360], sorted_angles, [sorted_angles[0] + 360])
     )
-    sort_indices = np.argsort(remapped_for_sort)
+    wrapped_elevations = np.concatenate(
+        ([sorted_elevations[-1]], sorted_elevations, [sorted_elevations[0]])
+    )
 
-    sorted_angles_neg_pos = remapped_for_sort[sort_indices]
-    sorted_elevations = rolled_elevations[sort_indices]
+    # Define the azimuth for each pixel column in the output image (North is at the center).
+    # The center pixel (output_width / 2) should correspond to 0° azimuth.
+    output_azimuths = np.linspace(0, 360, output_width, endpoint=False)
 
-    output_azimuths = np.linspace(-180, 180, output_width, endpoint=False)
-
-    # Interpolate elevations onto this new North-centered grid.
+    # Interpolate elevations onto the pixel grid. `period=360` handles the wrap-around.
     interpolated_elevations = np.interp(
-        output_azimuths, sorted_angles_neg_pos, sorted_elevations
+        output_azimuths, wrapped_angles, wrapped_elevations, period=360
     )
+
+    # Roll the interpolated elevations so that North (0°) is at the center of the image
+    # The interpolation was done on 0-360, so 0 degrees is at the start. We want it in the middle.
+    pixels_to_roll = -int(output_width / 2)
+    final_elevations = np.roll(interpolated_elevations, pixels_to_roll)
 
     # Calculate the vertical pixel position of the skyline for each column.
+    # Elevation `+vertical_fov/2` is at the top row (0).
+    # Elevation `-vertical_fov/2` is at the bottom row (output_height).
     top_elevation = vertical_fov / 2.0
     skyline_rows = (
-        (top_elevation - interpolated_elevations) / vertical_fov
+        (top_elevation - final_elevations) / vertical_fov
     ) * output_height
 
+    # Clip values to be within the image bounds and convert to integer pixel indices.
     skyline_rows = np.clip(np.round(skyline_rows), 0, output_height).astype(int)
 
-    # Create the mask array. Initialize to 0 (below skyline).
+    # Create the mask array. Initialize to 0 (black, for ground).
     mask = np.full((output_height, output_width), 0, dtype=np.uint8)
 
-    # Fill in the 'sky' pixels (value = 1)
+    # Fill in the 'sky' pixels (value = 255, white) for each column.
     for x, y_sky in enumerate(skyline_rows):
         mask[0:y_sky, x] = 255
 
     try:
         mask_image = Image.fromarray(mask, mode="L")  # 'L' mode is 8-bit grayscale
         mask_image.save(output_path)
-        print(f"North-centered skyline mask successfully saved to: {output_path}")
+        print(f"  > North-centered skyline mask successfully saved to: {output_path}")
     except Exception as e:
-        print(f"Error saving mask image: {e}")
+        print(f"  > Error saving mask image: {e}")
 
 
 def save_skyline_data(
@@ -666,15 +677,16 @@ def save_skyline_data(
     Saves the numerical skyline data (angles, elevations, etc.) to a CSV file.
     """
     print(f"  > Saving numerical skyline data to {output_path.name}")
-    with open(output_path, "w") as f:
-        f.write(
-            "Direction_deg,Elevation_deg,Distance_m,Skyline_X,Skyline_Y,Skyline_Z\n"
-        )
-        for i in range(len(angles)):
-            f.write(
-                f"{angles[i]:.3f},{elevations[i]:.4f},{distances[i]:.3f},"
-                f"{skyline_points[i][0]:.3f},{skyline_points[i][1]:.3f},{skyline_points[i][2]:.3f}\n"
-            )
+    data_to_save = {
+        "Direction_deg": angles,
+        "Elevation_deg": elevations,
+        "Distance_m": distances,
+        "Skyline_X": skyline_points[:, 0],
+        "Skyline_Y": skyline_points[:, 1],
+        "Skyline_Z": skyline_points[:, 2],
+    }
+    df = pd.DataFrame(data_to_save)
+    df.to_csv(output_path, index=False, float_format="%.4f")
 
 
 def create_skyline_database(
@@ -748,9 +760,9 @@ def create_skyline_database(
 
             # 5. Add a record to our database list
             record = {
-                "x": x,
-                "y": y,
-                "z": base_z,
+                "easting": x,
+                "northing": y,
+                "z_height": base_z,
                 "mask_path": mask_path.name,
                 "skyline_data_path": data_path.name,
                 "status": "success",
@@ -761,9 +773,9 @@ def create_skyline_database(
             print(f"  !!! ERROR processing point ({x:.2f}, {y:.2f}): {e}")
             # Add a failure record to the database
             record = {
-                "x": x,
-                "y": y,
-                "z": base_z,
+                "easting": x,
+                "northing": y,
+                "z_height": base_z,
                 "mask_path": "",
                 "skyline_data_path": "",
                 "status": f"failure: {e}",
@@ -781,6 +793,49 @@ def create_skyline_database(
         print("No coordinates were processed.")
 
     print("===== BATCH SKYLINE GENERATION COMPLETE =====")
+
+def create_and_save_grid(
+    start_coords: Tuple[float, float],
+    spacing_meters: float,
+    num_points_x: int,
+    num_points_y: int,
+    output_path: Path,
+):
+        """
+        Generates a grid of coordinates and saves it to a CSV file.
+
+        The grid starts at the given coordinates and expands in the positive X (East)
+        and positive Y (North) directions.
+
+        Args:
+            start_coords (Tuple[float, float]): The (easting, northing) of the bottom-left point of the grid.
+            spacing_meters (float): The distance between adjacent grid points in meters.
+            num_points_x (int): The number of points in the horizontal (East-West) direction.
+            num_points_y (int): The number of points in the vertical (North-South) direction.
+            output_path (Path): The file path to save the generated CSV grid.
+        """
+        print(
+            f"\nGenerating a {num_points_x}x{num_points_y} coordinate grid..."
+        )
+        start_x, start_y = start_coords
+        print(f"  Start Coordinate (E, N): ({start_x:.2f}, {start_y:.2f})")
+        print(f"  Spacing: {spacing_meters} meters")
+
+        grid_points = []
+        for j in range(num_points_y):  # Vertical loop (Northing)
+            current_y = start_y + j * spacing_meters
+            for i in range(num_points_x):  # Horizontal loop (Easting)
+                current_x = start_x + i * spacing_meters
+                grid_points.append({"easting": current_x, "northing": current_y})
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Convert to a DataFrame and save as CSV
+        df = pd.DataFrame(grid_points)
+        df.to_csv(output_path, index=False, float_format="%.3f")
+
+        print(f"  Total points generated: {len(grid_points)}")
+        print(f"✅ Grid saved successfully to: {output_path}")
 
 
 def main():
@@ -833,26 +888,42 @@ if __name__ == "__main__":
     RUN_BATCH_MODE = True
 
     if RUN_BATCH_MODE:
-        # Example: A simple 3x3 grid of coordinates
-        grid_coords = [
-            (613400.0, 6462200.0),
-            (613400.0, 6462250.0),
-            (613400.0, 6462300.0),
-            (613450.0, 6462200.0),
-            (613450.0, 6462250.0),  # Center point
-            (613450.0, 6462300.0),
-            (613500.0, 6462200.0),
-            (613500.0, 6462250.0),
-            (613500.0, 6462300.0),
-        ]
+        # === Step 1: Define and create the observer grid CSV ===
+        # This grid file can then be used in the main pipeline.
+        grid_output_path = Path("input/observer_grid.csv")
+        create_and_save_grid(
+            start_coords=(613400.0, 6462200.0),  # Bottom-left corner (Easting, Northing)
+            spacing_meters=25.0,                 # Distance between points
+            num_points_x=500,                      # Number of columns
+            num_points_y=500,                      # Number of rows
+            output_path=grid_output_path,
+        )
+
+        # === Step 2: Run the batch skyline generation using the created grid ===
+        print("\n--- Starting skyline generation using the new grid file ---")
+
+        # Load the coordinates from the file we just created
+        try:
+            grid_df = pd.read_csv(grid_output_path)
+            # Convert DataFrame columns to a list of (easting, northing) tuples
+            coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
+        except FileNotFoundError:
+            print(f"ERROR: Grid file not found at {grid_output_path}. Aborting.")
+            exit()
+        except KeyError:
+            print(f"ERROR: Grid file must contain 'easting' and 'northing' columns. Aborting.")
+            exit()
+
 
         # Define the directory to store all database files
-        output_db_directory = Path("output/dsm/skyline_database")
+        output_db_directory = Path("output/skyline_database")
         viewpoint_z_height = 1.5
 
         # Run the database creation function
-        create_skyline_database(grid_coords, viewpoint_z_height, output_db_directory)
+        create_skyline_database(
+            coords_to_process, viewpoint_z_height, output_db_directory
+        )
 
     else:
-        # Run the original single-point analysis
+        # Run the original single-point analysis with interactive plots
         main()
