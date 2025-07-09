@@ -16,8 +16,9 @@ from image_retrieval.colmap_naive_image_retrieval import (
     retrieve_top_matches,
 )
 from skyline_processing import (
+    cnn_skyline_encoder,
     fourier_skyline_encoder,
-    fourier_skyline_matcher,
+    skyline_matcher,
 )
 
 # from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
@@ -988,7 +989,7 @@ def run_matching_analysis():
             num_windows = 1
             print("\nGlobal strategy detected (using 1 window).")
 
-        results = fourier_skyline_matcher.run_self_matching(
+        results = skyline_matcher.run_self_matching(
             fingerprint_path=selected_fp_path,
             num_samples=10,
             top_n=5,
@@ -1016,6 +1017,144 @@ def run_matching_analysis():
 
     except Exception as e:
         print(f"An error occurred during matching: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_cnn_encoding():
+    """
+    Stage 11: Select a dataset and create CNN-based fingerprints for its binary panoramas.
+    """
+    print_stage_header(
+        11,
+        "CNN SKYLINE ENCODING",
+        "Generating rich feature vectors using a pre-trained CNN.",
+    )
+
+    try:
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir() and (d / "binary_panorama").is_dir()
+            ]
+        )
+
+        if not dataset_dirs:
+            print("No binary panorama folders found. Please run Stage 5 first.")
+            return False
+
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to encode with the CNN:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print(
+                        f"\nInvalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
+                    )
+            except ValueError:
+                print("\nInvalid input. Please enter a number.")
+
+        print(f"\n--- Encoding skylines for dataset: {selected_dir.name} ---")
+
+        input_binary_dir = selected_dir / "binary_panorama"
+        dataset_name = selected_dir.name
+
+        # Define the new output directory structure
+        project_root = Path(__file__).parent
+        output_dir = project_root / "databases" / dataset_name / "cnn_fingerprints"
+        output_path = output_dir / "fingerprints.npz"
+
+        exit_code = cnn_skyline_encoder.create_cnn_fingerprints_for_directory(
+            input_dir=input_binary_dir, output_filepath=output_path
+        )
+
+        return exit_code == 0
+
+    except Exception as e:
+        print(f"An error occurred during CNN encoding: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_cnn_matching_analysis():
+    """
+    Stage 12: Perform a self-matching analysis on a CNN-based fingerprint
+    database to validate the encoding method.
+    """
+    print_stage_header(
+        12,
+        "CNN FINGERPRINT SELF-MATCHING ANALYSIS",
+        "Matching real panoramas against each other using CNN features.",
+    )
+
+    try:
+        project_root = Path(__file__).parent
+        db_root_dir = project_root / "databases"
+
+        available_fp_files = sorted(list(db_root_dir.glob("*/cnn_fingerprints/*.npz")))
+        if not available_fp_files:
+            print(
+                f"No CNN fingerprint files found in '{db_root_dir}/*/cnn_fingerprints/'."
+            )
+            print("   Please run Stage 11 (CNN Skyline Encoding) first.")
+            return False
+
+        selected_fp_path = None
+        while True:
+            print("\nPlease select a CNN fingerprint file to analyze:")
+            for i, file_path in enumerate(available_fp_files):
+                print(f"  [{i}]: {file_path.relative_to(project_root)}")
+            choice_str = input("Enter the number of the file: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(available_fp_files):
+                    selected_fp_path = available_fp_files[choice_idx]
+                    break
+                else:
+                    print("❌ Invalid choice.")
+            except ValueError:
+                print("❌ Please enter a number.")
+
+        # The CNN encoder also uses 4 windows, so we can reuse the matcher perfectly
+        results = skyline_matcher.run_self_matching(
+            fingerprint_path=selected_fp_path, num_samples=10, top_n=5, num_windows=4
+        )
+
+        if results:
+            print("\n--- Top 5 Self-Matching Results (CNN) ---")
+            for result in results:
+                print(f"\n  Query: {result['query']}")
+                top_matches_list = result.get("top_matches", [])
+                if top_matches_list:
+                    for match in top_matches_list:
+                        scores_str = ", ".join(
+                            [f"{s:.3f}" for s in match["window_scores"]]
+                        )
+                        print(
+                            f"    -> Match: {match['match_key']:<25} | Avg Score: {match['avg_score']:.4f} | Window Scores: [{scores_str}]"
+                        )
+                else:
+                    print("    -> No other images found to match against.")
+        else:
+            print("Analysis could not be completed.")
+
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during CNN matching analysis: {e}")
         import traceback
 
         traceback.print_exc()
@@ -1073,6 +1212,8 @@ def main():
             "Fourier Skyline Matching",
             run_matching_analysis,
         ),  # TODO: This is just the start, later we want to implement encoding and matching for CNN feature extractions
+        11: ("Create CNN skyline encoding", run_cnn_encoding),
+        12: ("CNN Skyline Matching", run_cnn_matching_analysis),
     }
 
     # Determine which stages to run
