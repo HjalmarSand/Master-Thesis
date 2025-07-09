@@ -31,7 +31,9 @@ VIEWPOINT_Y = 6462211.464
 VIEWPOINT_Z = 1.5
 
 
-MASK_OUTPUT_PATH = "skyline_mask.png"  # Filename for the output mask, only works in single query mode
+MASK_OUTPUT_PATH = (
+    "skyline_mask.png"  # Filename for the output mask, only works in single query mode
+)
 MASK_WIDTH = constants.PANORAMA_IMG_WIDTH  # Desired width of the mask in pixels
 MASK_HEIGHT = constants.PANORAMA_IMG_HEIGHT  # Desired height of the mask in pixels
 
@@ -210,7 +212,7 @@ def load_multiple_point_clouds(
     search_radius: float,
 ) -> np.ndarray:
     """Load and combine point cloud data from multiple LAZ files with distance filtering."""
-    print(f"\n=== CHECKING FILE RELEVANCE USING JSON METADATA ===")
+    print("\n=== CHECKING FILE RELEVANCE USING JSON METADATA ===")
     print(
         f"Viewpoint: X={viewpoint_coords[0]:.2f}, Y={viewpoint_coords[1]:.2f}, Z={viewpoint_coords[2]:.2f}"
     )
@@ -223,7 +225,7 @@ def load_multiple_point_clouds(
         if check_file_relevance_from_json(file_path, viewpoint_coords, search_radius):
             relevant_files.append(file_path)
 
-    print(f"\n=== BOUNDS CHECK RESULTS ===")
+    print("\n=== BOUNDS CHECK RESULTS ===")
     print(f"Files potentially relevant: {len(relevant_files)}/{len(file_paths)}")
     print(f"Files skipped (too far away): {len(file_paths) - len(relevant_files)}")
 
@@ -252,7 +254,7 @@ def load_multiple_point_clouds(
     if not all_points:
         raise ValueError("No relevant point clouds were successfully loaded!")
 
-    print(f"\n=== FINAL LOADING RESULTS ===")
+    print("\n=== FINAL LOADING RESULTS ===")
     print(f"Files successfully loaded: {successful_files}/{len(relevant_files)}")
     print(f"Files that failed to load: {failed_files}")
     print(f"Total relevant points loaded: {total_points:,}")
@@ -270,7 +272,7 @@ def load_multiple_point_clouds(
     y_coords = combined_points["Y"]
     z_coords = combined_points["Z"]
 
-    print(f"Relevant data coordinate ranges:")
+    print("Relevant data coordinate ranges:")
     print(f"  X: {x_coords.min():.2f} to {x_coords.max():.2f}")
     print(f"  Y: {y_coords.min():.2f} to {y_coords.max():.2f}")
     print(f"  Z: {z_coords.min():.2f} to {z_coords.max():.2f}")
@@ -288,7 +290,7 @@ def get_viewpoint_coordinates():
     """
     print("\n=== VIEWPOINT SELECTION (REQUIRED FOR SPATIAL FILTERING) ===")
 
-    print(f"Current configured viewpoint:")
+    print("Current configured viewpoint:")
     print(f"  X: {VIEWPOINT_X}")
     print(f"  Y: {VIEWPOINT_Y}")
     print(f"  Z: {VIEWPOINT_Z}")
@@ -310,9 +312,9 @@ def get_viewpoint_coordinates():
 
             elif choice == "2":
                 print("\nEnter new viewpoint coordinates:")
-                x = float(input(f"X coordinate: "))
-                y = float(input(f"Y coordinate: "))
-                z = float(input(f"Z coordinate: "))
+                x = float(input("X coordinate: "))
+                y = float(input("Y coordinate: "))
+                z = float(input("Z coordinate: "))
                 print(f"Using custom viewpoint: X={x}, Y={y}, Z={z}")
                 return x, y, z
 
@@ -355,7 +357,7 @@ def calculate_skyline(
         skyline_points: Array of actual (or averaged) skyline point coordinates.
     """
 
-    print(f"\n=== CALCULATING SKYLINE (0° = North) ===")
+    print("\n=== CALCULATING SKYLINE (0° = North) ===")
 
     vp_x, vp_y, vp_z = viewpoint_coords
 
@@ -644,9 +646,7 @@ def save_skyline_as_mask(
     # Elevation `+vertical_fov/2` is at the top row (0).
     # Elevation `-vertical_fov/2` is at the bottom row (output_height).
     top_elevation = vertical_fov / 2.0
-    skyline_rows = (
-        (top_elevation - final_elevations) / vertical_fov
-    ) * output_height
+    skyline_rows = ((top_elevation - final_elevations) / vertical_fov) * output_height
 
     # Clip values to be within the image bounds and convert to integer pixel indices.
     skyline_rows = np.clip(np.round(skyline_rows), 0, output_height).astype(int)
@@ -705,7 +705,7 @@ def create_skyline_database(
         base_z (float): The Z-coordinate (height above ground) to use for all viewpoints.
         output_directory (Path): The directory where all generated files will be stored.
     """
-    print(f"\n===== STARTING BATCH SKYLINE DATABASE GENERATION =====")
+    print("\n===== STARTING BATCH SKYLINE DATABASE GENERATION =====")
     print(f"Total coordinates to process: {len(coords_list)}")
     print(f"Output will be saved in: {output_directory}")
 
@@ -794,6 +794,7 @@ def create_skyline_database(
 
     print("===== BATCH SKYLINE GENERATION COMPLETE =====")
 
+
 def create_and_save_grid(
     start_coords: Tuple[float, float],
     spacing_meters: float,
@@ -801,41 +802,39 @@ def create_and_save_grid(
     num_points_y: int,
     output_path: Path,
 ):
-        """
-        Generates a grid of coordinates and saves it to a CSV file.
+    """
+    Generates a grid of coordinates and saves it to a CSV file.
 
-        The grid starts at the given coordinates and expands in the positive X (East)
-        and positive Y (North) directions.
+    The grid starts at the given coordinates and expands in the positive X (East)
+    and positive Y (North) directions.
 
-        Args:
-            start_coords (Tuple[float, float]): The (easting, northing) of the bottom-left point of the grid.
-            spacing_meters (float): The distance between adjacent grid points in meters.
-            num_points_x (int): The number of points in the horizontal (East-West) direction.
-            num_points_y (int): The number of points in the vertical (North-South) direction.
-            output_path (Path): The file path to save the generated CSV grid.
-        """
-        print(
-            f"\nGenerating a {num_points_x}x{num_points_y} coordinate grid..."
-        )
-        start_x, start_y = start_coords
-        print(f"  Start Coordinate (E, N): ({start_x:.2f}, {start_y:.2f})")
-        print(f"  Spacing: {spacing_meters} meters")
+    Args:
+        start_coords (Tuple[float, float]): The (easting, northing) of the bottom-left point of the grid.
+        spacing_meters (float): The distance between adjacent grid points in meters.
+        num_points_x (int): The number of points in the horizontal (East-West) direction.
+        num_points_y (int): The number of points in the vertical (North-South) direction.
+        output_path (Path): The file path to save the generated CSV grid.
+    """
+    print(f"\nGenerating a {num_points_x}x{num_points_y} coordinate grid...")
+    start_x, start_y = start_coords
+    print(f"  Start Coordinate (E, N): ({start_x:.2f}, {start_y:.2f})")
+    print(f"  Spacing: {spacing_meters} meters")
 
-        grid_points = []
-        for j in range(num_points_y):  # Vertical loop (Northing)
-            current_y = start_y + j * spacing_meters
-            for i in range(num_points_x):  # Horizontal loop (Easting)
-                current_x = start_x + i * spacing_meters
-                grid_points.append({"easting": current_x, "northing": current_y})
+    grid_points = []
+    for j in range(num_points_y):  # Vertical loop (Northing)
+        current_y = start_y + j * spacing_meters
+        for i in range(num_points_x):  # Horizontal loop (Easting)
+            current_x = start_x + i * spacing_meters
+            grid_points.append({"easting": current_x, "northing": current_y})
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert to a DataFrame and save as CSV
-        df = pd.DataFrame(grid_points)
-        df.to_csv(output_path, index=False, float_format="%.3f")
+    # Convert to a DataFrame and save as CSV
+    df = pd.DataFrame(grid_points)
+    df.to_csv(output_path, index=False, float_format="%.3f")
 
-        print(f"  Total points generated: {len(grid_points)}")
-        print(f"✅ Grid saved successfully to: {output_path}")
+    print(f"  Total points generated: {len(grid_points)}")
+    print(f"✅ Grid saved successfully to: {output_path}")
 
 
 def main():
@@ -873,7 +872,7 @@ def main():
 
         plot_skyline(angles, elevations, distances, viewpoint_coords, len(laz_files))
 
-        print(f"\n=== MULTI-LAZ SKYLINE GENERATION COMPLETE ===")
+        print("\n=== MULTI-LAZ SKYLINE GENERATION COMPLETE ===")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -892,10 +891,13 @@ if __name__ == "__main__":
         # This grid file can then be used in the main pipeline.
         grid_output_path = Path("input/observer_grid.csv")
         create_and_save_grid(
-            start_coords=(613400.0, 6462200.0),  # Bottom-left corner (Easting, Northing)
-            spacing_meters=25.0,                 # Distance between points
-            num_points_x=500,                      # Number of columns
-            num_points_y=500,                      # Number of rows
+            start_coords=(
+                613400.0,
+                6462200.0,
+            ),  # Bottom-left corner (Easting, Northing)
+            spacing_meters=25.0,  # Distance between points
+            num_points_x=500,  # Number of columns
+            num_points_y=500,  # Number of rows
             output_path=grid_output_path,
         )
 
@@ -911,9 +913,10 @@ if __name__ == "__main__":
             print(f"ERROR: Grid file not found at {grid_output_path}. Aborting.")
             exit()
         except KeyError:
-            print(f"ERROR: Grid file must contain 'easting' and 'northing' columns. Aborting.")
+            print(
+                "ERROR: Grid file must contain 'easting' and 'northing' columns. Aborting."
+            )
             exit()
-
 
         # Define the directory to store all database files
         output_db_directory = Path("output/skyline_database")

@@ -833,7 +833,7 @@ def run_lidar_skyline_generation():
                 f"Successfully loaded {len(coords_to_process)} coordinates from grid file."
             )
         except (FileNotFoundError, KeyError) as e:
-            print(f"❌ ERROR: Could not read the generated grid file: {e}")
+            print(f"ERROR: Could not read the generated grid file: {e}")
             print("Aborting skyline generation.")
             return False
 
@@ -844,11 +844,11 @@ def run_lidar_skyline_generation():
             output_directory=output_db_directory,
         )
 
-        print("\n✅ LiDAR skyline database generation completed successfully!")
+        print("\nLiDAR skyline database generation completed successfully!")
         return True
 
     except Exception as e:
-        print(f"❌ An error occurred during LiDAR processing: {e}")
+        print(f"An error occurred during LiDAR processing: {e}")
         import traceback
 
         traceback.print_exc()
