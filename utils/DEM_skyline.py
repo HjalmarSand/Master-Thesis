@@ -8,17 +8,23 @@ import pandas as pd
 import pdal
 from PIL import Image
 
-LAZ_DIRECTORY = Path("./DSM_Data/laser/cleaned_laser")
+import constants
+
+LAZ_DIRECTORY = constants.LIDAR_DATA_DIR
 
 SEARCH_RADIUS = (
     1500.0  # How far away to search for potential skyline points (in meters)
 )
 ANGLE_STEP = (
-    1 / 5120 * 5120  # 1 / 5120 * 64 seems to be sweetspot
+    1
+    / constants.PANORAMA_IMG_WIDTH
+    * constants.LIDAR_SKYLINE_RESOLUTION  # 1 / 5120 * 64 seems to be sweetspot in that it runs quite fast and still gives quite good resolution
 )  # degrees - angular resolution of skyline, 5120 is the number of pixels in the panorama
 MIN_DISTANCE = 10.0  # meters - minimum distance to consider (avoid nearby clutter)
-MAX_POINTS_PER_FILE = 5000000  # TODO: Implement this functionality to limit points loaded from each file for memory handling
-N_POINTS_TO_AVERAGE = 10  # Number of highest points to average in each sector (1 = single highest point, >1 = average top N points)
+# MAX_POINTS_PER_FILE = 5000000  # TODO: If time allows it, implement this functionality to limit points loaded from each file for memory handling
+N_POINTS_TO_AVERAGE = 1  # Number of highest points to average in each sector (1 = single highest point, >1 = average top N points)
+
+
 # Query point
 VIEWPOINT_X = 613491.715
 VIEWPOINT_Y = 6462211.464
@@ -26,12 +32,8 @@ VIEWPOINT_Z = 1.5
 
 
 MASK_OUTPUT_PATH = "skyline_mask.png"  # Filename for the output mask
-MASK_WIDTH = 5120  # Desired width of the mask in pixels
-MASK_HEIGHT = 2560  # Desired height of the mask in pixels
-
-# A 180-degree VFOV represents a full equirectangular projection from zenith (+90) to nadir (-90).
-# A 90-degree VFOV would represent a view from +45 to -45 degrees elevation.
-MASK_VFOV_DEGREES = 180.0
+MASK_WIDTH = constants.PANORAMA_IMG_WIDTH  # Desired width of the mask in pixels
+MASK_HEIGHT = constants.PANORAMA_IMG_HEIGHT  # Desired height of the mask in pixels
 
 
 def find_laz_files() -> List[Path]:
@@ -206,7 +208,6 @@ def load_multiple_point_clouds(
     file_paths: List[Path],
     viewpoint_coords: Tuple[float, float, float],
     search_radius: float,
-    max_points_per_file: int = 500000,
 ) -> np.ndarray:
     """Load and combine point cloud data from multiple LAZ files with distance filtering."""
     print(f"\n=== CHECKING FILE RELEVANCE USING JSON METADATA ===")
@@ -240,9 +241,7 @@ def load_multiple_point_clouds(
     failed_files = 0
 
     for file_path in relevant_files:
-        points = load_single_point_cloud(
-            file_path, viewpoint_coords, search_radius, max_points_per_file
-        )
+        points = load_single_point_cloud(file_path, viewpoint_coords, search_radius)
         if points is not None and len(points) > 0:
             all_points.append(points)
             total_points += len(points)
@@ -722,7 +721,7 @@ def create_skyline_database(
         try:
             # 1. Load relevant point clouds for the current viewpoint
             combined_points = load_multiple_point_clouds(
-                all_laz_files, viewpoint_coords, SEARCH_RADIUS, MAX_POINTS_PER_FILE
+                all_laz_files, viewpoint_coords, SEARCH_RADIUS
             )
 
             # 2. Calculate the skyline
@@ -742,7 +741,6 @@ def create_skyline_database(
                 str(mask_path),  # Ensure path is a string for older libs
                 MASK_WIDTH,
                 MASK_HEIGHT,
-                MASK_VFOV_DEGREES,
             )
 
             # 4. Save the numerical skyline data
@@ -794,7 +792,7 @@ def main():
         print(f"\nPreparing to process {len(laz_files)} LAZ files...")
         viewpoint_coords = get_viewpoint_coordinates()
         combined_points = load_multiple_point_clouds(
-            laz_files, viewpoint_coords, SEARCH_RADIUS, MAX_POINTS_PER_FILE
+            laz_files, viewpoint_coords, SEARCH_RADIUS
         )
 
         print(f"\nCalculating skyline with {ANGLE_STEP}° resolution...")
@@ -816,7 +814,6 @@ def main():
             MASK_OUTPUT_PATH,
             MASK_WIDTH,
             MASK_HEIGHT,
-            MASK_VFOV_DEGREES,
         )
 
         plot_skyline(angles, elevations, distances, viewpoint_coords, len(laz_files))

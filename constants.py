@@ -10,10 +10,17 @@ IMAGES_DIR = PROJECT_ROOT / "images"
 # COLMAP directory
 COLMAP_DIR = PROJECT_ROOT / "colmap_fisheye_project"
 
-# Path to DSM-folder
-LIDAR_DATA_DIR = PROJECT_ROOT / "DSM_Data"
+# Path to DSM-related data
+LIDAR_DATA_DIR = PROJECT_ROOT / "DSM_Data" / "cleaned_laser"
+LIDAR_SKYLINE_RESOLUTION = 64  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) / this factor
+LIDAR_OUTPUT_DIR = PROJECT_ROOT / "output" / "lidar_skyline"
 
-OBSERVER_GRID_PATH = PROJECT_ROOT / "data" / "observer_grid.shp" # TODO: CREATE THIS FILE IN QGI
+OBSERVER_GRID_PATH = (
+    PROJECT_ROOT / "data" / "observer_grid.shp"
+)  # TODO: CREATE THIS FILE IN QGI
+
+PANORAMA_IMG_WIDTH = 5120
+PANORAMA_IMG_HEIGHT = 960
 
 # Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280
