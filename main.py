@@ -9,7 +9,11 @@ import pandas as pd
 import constants
 from DEM.DEM_skyline import create_and_save_grid, create_skyline_database
 from image_processing import split_stacked_images
+
+# from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
 from image_processing.create_panoramas import build_panoramas
+
+# Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
 from image_processing.fisheye_undistorter import FisheyeUndistorter
 from image_retrieval.colmap_naive_image_retrieval import (
     ColmapImageRetriever,

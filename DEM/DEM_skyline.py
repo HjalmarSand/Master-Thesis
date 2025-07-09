@@ -7,13 +7,14 @@ import numpy as np
 import pandas as pd
 import pdal
 from PIL import Image
+from tqdm import tqdm
 
 import constants
 
 LAZ_DIRECTORY = constants.LIDAR_DATA_DIR
 
 SEARCH_RADIUS = (
-    1500.0  # How far away to search for potential skyline points (in meters)
+    1000.0  # How far away to search for potential skyline points (in meters)
 )
 ANGLE_STEP = (
     1
@@ -57,8 +58,8 @@ def find_laz_files() -> List[Path]:
         raise FileNotFoundError(f"No LAZ files found in directory: {LAZ_DIRECTORY}")
 
     print(f"Found {len(laz_files)} LAZ files:")
-    for file_path in laz_files:
-        print(f"  {file_path}")
+    # for file_path in laz_files:
+    #    print(f"  {file_path}")
 
     return laz_files
 
@@ -129,13 +130,13 @@ def check_file_relevance_from_json(
 
         is_relevant = min_distance_to_box <= search_radius
 
-        print(f"  Bounds: X[{min_x:.1f}, {max_x:.1f}], Y[{min_y:.1f}, {max_y:.1f}]")
-        print(f"  Min distance to box: {min_distance_to_box:.1f}m")
+        # print(f"  Bounds: X[{min_x:.1f}, {max_x:.1f}], Y[{min_y:.1f}, {max_y:.1f}]")
+        # print(f"  Min distance to box: {min_distance_to_box:.1f}m")
 
-        if is_relevant:
-            print(f"  ✓ File is relevant (within {search_radius}m)")
-        else:
-            print(f"  ✗ File too far away (> {search_radius}m)")
+        # if is_relevant:
+        #    print(f"  ✓ File is relevant (within {search_radius}m)")
+        # else:
+        #    print(f"  ✗ File too far away (> {search_radius}m)")
 
         return is_relevant
 
@@ -151,7 +152,7 @@ def load_single_point_cloud(
     max_points: int = 500000,
 ) -> Optional[np.ndarray]:
     """Load point cloud data from a single LAZ file, filtering by distance from viewpoint."""
-    print(f"Loading: {file_path.name}")
+    # print(f"Loading: {file_path.name}")
 
     vp_x, vp_y, vp_z = viewpoint_coords
 
@@ -193,12 +194,12 @@ def load_single_point_cloud(
         filtered_points = points[within_radius]
 
         if len(filtered_points) == 0:
-            print(f"  No points within {search_radius}m radius")
+            # print(f"  No points within {search_radius}m radius")
             return None
 
-        print(
-            f"  Loaded {len(filtered_points):,} points within {search_radius}m radius (filtered from {len(points):,})"
-        )
+        # print(
+        #    f"  Loaded {len(filtered_points):,} points within {search_radius}m radius (filtered from {len(points):,})"
+        # )
         return filtered_points
 
     except Exception as e:
@@ -212,22 +213,22 @@ def load_multiple_point_clouds(
     search_radius: float,
 ) -> np.ndarray:
     """Load and combine point cloud data from multiple LAZ files with distance filtering."""
-    print("\n=== CHECKING FILE RELEVANCE USING JSON METADATA ===")
-    print(
-        f"Viewpoint: X={viewpoint_coords[0]:.2f}, Y={viewpoint_coords[1]:.2f}, Z={viewpoint_coords[2]:.2f}"
-    )
-    print(f"Search radius: {search_radius}m")
+    # print(f"\n=== CHECKING FILE RELEVANCE USING JSON METADATA ===")
+    # print(
+    #    f"Viewpoint: X={viewpoint_coords[0]:.2f}, Y={viewpoint_coords[1]:.2f}, Z={viewpoint_coords[2]:.2f}"
+    # )
+    # print(f"Search radius: {search_radius}m")
 
     # First pass: Check which files are potentially relevant using their JSON metadata
     relevant_files = []
     for file_path in file_paths:
-        print(f"\nChecking bounds: {file_path.name}")
+        # print(f"\nChecking bounds: {file_path.name}")
         if check_file_relevance_from_json(file_path, viewpoint_coords, search_radius):
             relevant_files.append(file_path)
 
-    print("\n=== BOUNDS CHECK RESULTS ===")
-    print(f"Files potentially relevant: {len(relevant_files)}/{len(file_paths)}")
-    print(f"Files skipped (too far away): {len(file_paths) - len(relevant_files)}")
+    # print(f"\n=== BOUNDS CHECK RESULTS ===")
+    # print(f"Files potentially relevant: {len(relevant_files)}/{len(file_paths)}")
+    # print(f"Files skipped (too far away): {len(file_paths) - len(relevant_files)}")
 
     if not relevant_files:
         raise ValueError(
@@ -235,7 +236,7 @@ def load_multiple_point_clouds(
         )
 
     # Second pass: Load only the relevant files
-    print(f"\n=== LOADING {len(relevant_files)} RELEVANT LAZ FILES ===")
+    # print(f"\n=== LOADING {len(relevant_files)} RELEVANT LAZ FILES ===")
 
     all_points = []
     total_points = 0
@@ -254,10 +255,10 @@ def load_multiple_point_clouds(
     if not all_points:
         raise ValueError("No relevant point clouds were successfully loaded!")
 
-    print("\n=== FINAL LOADING RESULTS ===")
-    print(f"Files successfully loaded: {successful_files}/{len(relevant_files)}")
-    print(f"Files that failed to load: {failed_files}")
-    print(f"Total relevant points loaded: {total_points:,}")
+    # print(f"\n=== FINAL LOADING RESULTS ===")
+    # print(f"Files successfully loaded: {successful_files}/{len(relevant_files)}")
+    # print(f"Files that failed to load: {failed_files}")
+    # print(f"Total relevant points loaded: {total_points:,}")
 
     # Combine all point clouds
     if len(all_points) == 1:
@@ -265,17 +266,10 @@ def load_multiple_point_clouds(
     else:
         combined_points = np.concatenate(all_points)
 
-    print(f"Combined relevant points: {len(combined_points):,}")
-
-    # Show combined coordinate ranges
-    x_coords = combined_points["X"]
-    y_coords = combined_points["Y"]
-    z_coords = combined_points["Z"]
-
-    print("Relevant data coordinate ranges:")
-    print(f"  X: {x_coords.min():.2f} to {x_coords.max():.2f}")
-    print(f"  Y: {y_coords.min():.2f} to {y_coords.max():.2f}")
-    print(f"  Z: {z_coords.min():.2f} to {z_coords.max():.2f}")
+    # print(f"Relevant data coordinate ranges:")
+    # print(f"  X: {x_coords.min():.2f} to {x_coords.max():.2f}")
+    # print(f"  Y: {y_coords.min():.2f} to {y_coords.max():.2f}")
+    # print(f"  Z: {z_coords.min():.2f} to {z_coords.max():.2f}")
 
     return combined_points
 
@@ -357,17 +351,11 @@ def calculate_skyline(
         skyline_points: Array of actual (or averaged) skyline point coordinates.
     """
 
-    print("\n=== CALCULATING SKYLINE (0° = North) ===")
+    # print(f"\n=== CALCULATING SKYLINE (0° = North) ===")
 
     vp_x, vp_y, vp_z = viewpoint_coords
 
-    print(f"Viewpoint: X={vp_x:.2f}, Y={vp_y:.2f}, Z={vp_z:.2f}")
-    if avg_top_n_points > 1:
-        print(
-            f"ROBUST MODE: Averaging the top {avg_top_n_points} points in each angular sector."
-        )
-    else:
-        print("STANDARD MODE: Using the single highest point in each angular sector.")
+    # print(f"Viewpoint: X={vp_x:.2f}, Y={vp_y:.2f}, Z={vp_z:.2f}")
 
     rel_x = points["X"] - vp_x
     rel_y = points["Y"] - vp_y
@@ -386,21 +374,17 @@ def calculate_skyline(
     valid_horizontal_dist = horizontal_dist[valid_mask]
     valid_angles = angles_deg[valid_mask]
 
-    print(
-        f"Found {len(valid_points):,} points within valid distance range ({min_distance}m to {search_radius}m)"
-    )
-
     angle_bins = np.arange(0, 360, angle_step)
     skyline_angles = []
     skyline_elevations = []
     skyline_distances = []
     skyline_points = []
 
-    print("Processing angular sectors...")
+    # print("Processing angular sectors...")
 
     for i, angle in enumerate(angle_bins):
-        if i % 90 == 0:
-            print(f"  Processing direction {angle:.0f}°...")
+        # if i % 90 == 0:
+        # print(f"  Processing direction {angle:.0f}°...")
 
         angle_min = angle - angle_step / 2
         angle_max = angle + angle_step / 2
@@ -459,13 +443,97 @@ def calculate_skyline(
             skyline_distances.append(search_radius)
             skyline_points.append([vp_x, vp_y, vp_z])
 
-    print(f"Skyline calculation complete: {len(skyline_angles)} directions processed")
+    # print(f"Skyline calculation complete: {len(skyline_angles)} directions processed")
 
     return (
         np.array(skyline_angles),
         np.array(skyline_elevations),
         np.array(skyline_distances),
         np.array(skyline_points),
+    )
+
+
+# A more memory intensive but faster version using pandas groupby
+def calculate_skyline_fast(
+    points,
+    viewpoint_coords,
+    search_radius,
+    angle_step=1.0,
+    min_distance=10.0,
+    avg_top_n_points=1,
+):
+    """
+    Calculates skyline using a fast, vectorized pandas groupby operation.
+    (Includes fix for empty angular bins).
+    """
+    vp_x, vp_y, vp_z = viewpoint_coords
+    rel_x, rel_y, rel_z = points["X"] - vp_x, points["Y"] - vp_y, points["Z"] - vp_z
+    horizontal_dist = np.sqrt(rel_x**2 + rel_y**2)
+    valid_mask = (horizontal_dist > min_distance) & (horizontal_dist < search_radius)
+
+    num_bins = int(np.ceil(360 / angle_step))
+    angle_labels = np.arange(0, 360, angle_step)
+    default_return = (
+        angle_labels,
+        np.zeros(len(angle_labels)),
+        np.full(len(angle_labels), search_radius),
+        np.full((len(angle_labels), 3), [vp_x, vp_y, vp_z]),
+    )
+
+    if not np.any(valid_mask):
+        print("  WARNING: No points found in range. Returning flat skyline.")
+        return default_return
+
+    valid_points, rel_x, rel_y, rel_z = (
+        points[valid_mask],
+        rel_x[valid_mask],
+        rel_y[valid_mask],
+        rel_z[valid_mask],
+    )
+    horizontal_dist = horizontal_dist[valid_mask]
+
+    azimuth_deg = (np.degrees(np.arctan2(rel_x, rel_y)) + 360) % 360
+    elevation_deg = np.degrees(np.arctan2(rel_z, horizontal_dist))
+
+    df = pd.DataFrame(
+        {
+            "X": valid_points["X"],
+            "Y": valid_points["Y"],
+            "Z": valid_points["Z"],
+            "elevation_deg": elevation_deg,
+            "distance": horizontal_dist,
+        }
+    )
+
+    angle_bins = np.arange(0, 360 + angle_step, angle_step)
+    df["angle_bin"] = pd.cut(
+        azimuth_deg,
+        bins=angle_bins,
+        labels=angle_labels,
+        right=False,
+        include_lowest=True,
+    )
+
+    if avg_top_n_points <= 1:
+        skyline_df = df.loc[
+            df.groupby("angle_bin", observed=True)["elevation_deg"].idxmax()
+        ].set_index("angle_bin")
+    else:
+        skyline_df = (
+            df.groupby("angle_bin", observed=True)
+            .apply(lambda g: g.nlargest(avg_top_n_points, "elevation_deg").mean())
+            .drop(columns=["angle_bin"])
+        )
+
+    final_df = skyline_df.reindex(angle_labels).fillna(
+        {"elevation_deg": 0, "distance": search_radius, "X": vp_x, "Y": vp_y, "Z": vp_z}
+    )
+
+    return (
+        final_df.index.values,
+        final_df["elevation_deg"].values,
+        final_df["distance"].values,
+        final_df[["X", "Y", "Z"]].values,
     )
 
 
@@ -605,9 +673,6 @@ def save_skyline_as_mask(
         output_height (int): The height of the mask image to generate.
         vertical_fov (float): The total vertical field of view in degrees for the mask.
     """
-    print(
-        f"  > Generating North-centered {output_width}x{output_height} mask with {vertical_fov}° VFOV..."
-    )
 
     # The goal is to create an array of elevation values, one for each column of the output image.
     # The image represents a 360-degree view, North-centered.
@@ -661,7 +726,7 @@ def save_skyline_as_mask(
     try:
         mask_image = Image.fromarray(mask, mode="L")  # 'L' mode is 8-bit grayscale
         mask_image.save(output_path)
-        print(f"  > North-centered skyline mask successfully saved to: {output_path}")
+        # print(f"  > North-centered skyline mask successfully saved to: {output_path}")
     except Exception as e:
         print(f"  > Error saving mask image: {e}")
 
@@ -676,7 +741,7 @@ def save_skyline_data(
     """
     Saves the numerical skyline data (angles, elevations, etc.) to a CSV file.
     """
-    print(f"  > Saving numerical skyline data to {output_path.name}")
+    # print(f"  > Saving numerical skyline data to {output_path.name}")
     data_to_save = {
         "Direction_deg": angles,
         "Elevation_deg": elevations,
@@ -717,10 +782,17 @@ def create_skyline_database(
     # Pre-find LAZ files once to avoid repeating the search
     all_laz_files = find_laz_files()
 
+    progress_bar = tqdm(
+        coords_list,
+        desc="Processing Grid Points",
+        unit="point",
+        bar_format="{l_bar}{bar:40}{r_bar}{bar:-10b}",  # A nice clean bar format
+    )
+
     # Loop through each coordinate in the grid
-    for i, (x, y) in enumerate(coords_list):
+    for i, (x, y) in enumerate(progress_bar):
         print(
-            f"\n--- Processing Grid Point {i + 1}/{len(coords_list)}: ({x:.2f}, {y:.2f}) ---"
+            f"--- Processing Grid Point {i + 1}/{len(coords_list)}: ({x:.2f}, {y:.2f}) ---"
         )
 
         viewpoint_coords = (x, y, base_z)
@@ -815,12 +887,13 @@ def create_and_save_grid(
         num_points_y (int): The number of points in the vertical (North-South) direction.
         output_path (Path): The file path to save the generated CSV grid.
     """
-    print(f"\nGenerating a {num_points_x}x{num_points_y} coordinate grid...")
+    # print(f"\nGenerating a {num_points_x}x{num_points_y} coordinate grid...")
     start_x, start_y = start_coords
-    print(f"  Start Coordinate (E, N): ({start_x:.2f}, {start_y:.2f})")
+    # print(f"  Start Coordinate (E, N): ({start_x:.2f}, {start_y:.2f})")
     print(f"  Spacing: {spacing_meters} meters")
 
     grid_points = []
+
     for j in range(num_points_y):  # Vertical loop (Northing)
         current_y = start_y + j * spacing_meters
         for i in range(num_points_x):  # Horizontal loop (Easting)
@@ -833,8 +906,8 @@ def create_and_save_grid(
     df = pd.DataFrame(grid_points)
     df.to_csv(output_path, index=False, float_format="%.3f")
 
-    print(f"  Total points generated: {len(grid_points)}")
-    print(f"✅ Grid saved successfully to: {output_path}")
+    # print(f"  Total points generated: {len(grid_points)}")
+    print(f"Grid saved successfully to: {output_path}")
 
 
 def main():

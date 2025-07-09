@@ -12,11 +12,17 @@ COLMAP_DIR = PROJECT_ROOT / "colmap_fisheye_project"
 
 # Path to DSM-related data
 LIDAR_DATA_DIR = PROJECT_ROOT / "DSM_Data" / "cleaned_laser"
-LIDAR_SKYLINE_RESOLUTION = 64  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) / this factor
-LIDAR_OUTPUT_DIR = PROJECT_ROOT / "output" / "lidar_skyline"
+
+LIDAR_SKYLINE_RESOLUTION = (
+    64 * 24
+)  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) / this factor
+
+LIDAR_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM" / "lidar_skyline"
+
+DEM_CALC_MODE = "ORIGINAL"  # Options: "ORIGINAL", "FAST"
 
 OBSERVER_GRID_PATH = (
-    PROJECT_ROOT / "input" / "observer_grid.csv"
+    PROJECT_ROOT / "databases" / "DEM" / "observer_grid.csv"
 )  # TODO: CREATE THIS FILE IN QGI
 
 PANORAMA_IMG_WIDTH = 5120
@@ -39,6 +45,6 @@ PLOTS_DIR = OUTPUT_DIR / "plots"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
 # Simulated skylines and .tif file will here
-DEM_OUTPUT_DIR = OUTPUT_DIR / "DEM"
+DEM_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM"
 
 MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl"
