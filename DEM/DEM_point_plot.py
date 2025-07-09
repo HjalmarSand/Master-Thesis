@@ -7,7 +7,7 @@ import numpy as np
 import pdal
 from mpl_toolkits.mplot3d import Axes3D
 
-LAZ_DIRECTORY = Path("./DSM_Data/cleaned_laser")
+LAZ_DIRECTORY = Path("./DSM_Data/cleaned")
 VIEWPOINT_COORDS = (613201, 6461722, 2.0)  # (X, Y, Z)
 
 SEARCH_RADIUS = 1000.0
