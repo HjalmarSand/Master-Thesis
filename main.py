@@ -796,60 +796,47 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
         return False
 
 
+# ! Warning: This method will take an enormous amount of time to run
 def run_lidar_skyline_generation():
     """
-    Stage 8: Generate a LiDAR skyline database.
-    This stage first creates a grid of observer points and then generates a
-    skyline mask and data for each point using the raw LAZ files.
+    Stage 8: Generate a LiDAR skyline database and save the raw masks to a file.
     """
     print_stage_header(
         8,
-        "LIDAR SKYLINE DATABASE GENERATION",
-        "Creating a grid and then generating skyline data from LAZ files.",
+        "LIDAR SKYLINE MASK GENERATION",
+        "Generates skyline masks from LAZ files and saves them as a NumPy database.",
     )
 
     try:
-        # This grid file will be used as input for the skyline generation.
-        grid_output_path = constants.OBSERVER_GRID_PATH
-        print("\n Generating Observer Grid")
-        print(f"Grid file will be saved to: {grid_output_path}")
+        # Part 1: Define and create the grid of observer points
+        print("\n--- Generating Observer Grid ---")
+        grid_df = create_and_save_grid(
+            start_coords=(611597.725, 6458055.924),
+            end_coords=(614547.264, 6463806.450),
+            spacing_meters=100.0,
+        )
+        coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
+        print(f"Generated a grid with {len(coords_to_process)} observer points.")
 
-        print("\n Generating Skyline Database from Grid")
-        output_db_directory = constants.DEM_OUTPUT_DIR / "skyline_database"
-        viewpoint_z_height = 1.5  # Standard camera height in meters
-
-        # Load the coordinates from the file we just created
-        try:
-            df = create_and_save_grid(
-                start_coords=(
-                    611597.725,
-                    6458055.924,
-                ),  # Bottom-left corner (Easting, Northing)
-                end_coords=(
-                    614547.264,
-                    6463806.450,
-                ),
-                spacing_meters=10,
-            )
-
-            coords_to_process = list(zip(df["easting"], df["northing"]))
-
-            print(
-                f"Successfully loaded {len(coords_to_process)} coordinates from grid file."
-            )
-        except (FileNotFoundError, KeyError) as e:
-            print(f"ERROR: Could not read the generated grid file: {e}")
-            print("Aborting skyline generation.")
-            return False
-
-        # Run the database creation function
-        create_skyline_database(
-            coords_list=coords_to_process,
-            base_z=viewpoint_z_height,
-            output_directory=output_db_directory,
+        # Part 2: Generate the simulated skyline masks in-memory
+        skyline_mask_database = create_skyline_database(
+            coords_list=coords_to_process, base_z=1.5
         )
 
-        print("\nLiDAR skyline database generation completed successfully!")
+        if not skyline_mask_database:
+            print("Simulated skyline database generation failed or returned empty.")
+            return False
+
+        # Part 3: Save the generated database of NumPy arrays to a single file
+        project_root = Path(__file__).parent
+        output_dir = project_root / "databases" / "dem_database"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "skyline_masks.npz"
+
+        print(f"\n--- Saving raw DEM skyline masks to {output_path} ---")
+        np.savez_compressed(output_path, **skyline_mask_database)
+
+        print(f"\nLiDAR skyline mask generation complete. Saved to '{output_path}'.")
         return True
 
     except Exception as e:
@@ -860,13 +847,76 @@ def run_lidar_skyline_generation():
         return False
 
 
-def run_skyline_fourier_encoder():
+def run_dem_skyline_encoding():
     """
-    Stage 9: Select a dataset and create fingerprint databases in the project root
-    under a new per-dataset directory structure.
+    Stage 9: Load a DEM skyline mask database and create all fingerprint types.
     """
     print_stage_header(
         9,
+        "DEM SKYLINE ENCODING",
+        "Generates all fingerprint types from a pre-computed DEM mask database.",
+    )
+
+    try:
+        project_root = Path(__file__).parent
+        db_root_dir = project_root / "databases"
+        mask_db_path = db_root_dir / "dem_database" / "skyline_masks.npz"
+
+        if not mask_db_path.is_file():
+            print(f"❌ DEM skyline mask database not found at '{mask_db_path}'.")
+            print("   Please run Stage 8 first.")
+            return False
+
+        print(f"Loading DEM skyline masks from {mask_db_path}...")
+        skyline_mask_database = np.load(mask_db_path)
+        print(f"Loaded {len(skyline_mask_database.files)} simulated skylines.")
+
+        # Define the output base directory
+        dataset_db_dir = db_root_dir / "dem_database"
+
+        # Fourier encoding
+        for strategy in ["global", "windowed"]:
+            fourier_fps = fourier_skyline_encoder.create_fingerprints_from_database(
+                skyline_mask_database, strategy=strategy
+            )
+            if fourier_fps:
+                output_path = (
+                    dataset_db_dir
+                    / f"fourier_{strategy}_fingerprints"
+                    / "fingerprints.npz"
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(output_path, **fourier_fps)
+                print(f"Saved DEM Fourier ({strategy}) fingerprints to {output_path}")
+
+        # CNN encoding
+        cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_database(
+            skyline_mask_database
+        )
+        if cnn_fps:
+            output_path = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(output_path, **cnn_fps)
+            print(f"Saved DEM CNN fingerprints to {output_path}")
+
+        print("\nDEM skyline encoding complete.")
+        return True
+
+    except Exception as e:
+        print(f"❌ An error occurred during DEM encoding: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_skyline_fourier_encoder():
+    """
+    Stage 10: Select a dataset and create fingerprint databases in the project root
+    under a new per-dataset directory structure.
+    """
+    print_stage_header(
+        10,
         "SKYLINE FINGERPRINTING",
         "Generating 'global' and 'windowed' fingerprint databases.",
     )
@@ -951,11 +1001,11 @@ def run_skyline_fourier_encoder():
 
 def run_matching_analysis():
     """
-    Stage 10: Perform a self-matching analysis on a fingerprint database,
+    Stage 11: Perform a self-matching analysis on a fingerprint database,
     showing detailed per-window scores for windowed strategies.
     """
     print_stage_header(
-        10,
+        11,
         "FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other to test fingerprint quality.",
     )
@@ -1030,10 +1080,10 @@ def run_matching_analysis():
 
 def run_cnn_encoding():
     """
-    Stage 11: Select a dataset and create CNN-based fingerprints for its binary panoramas.
+    Stage 12: Select a dataset and create CNN-based fingerprints for its binary panoramas.
     """
     print_stage_header(
-        11,
+        12,
         "CNN SKYLINE ENCODING",
         "Generating rich feature vectors using a pre-trained CNN.",
     )
@@ -1096,11 +1146,11 @@ def run_cnn_encoding():
 
 def run_cnn_matching_analysis():
     """
-    Stage 12: Perform a self-matching analysis on a CNN-based fingerprint
+    Stage 13: Perform a self-matching analysis on a CNN-based fingerprint
     database to validate the encoding method.
     """
     print_stage_header(
-        12,
+        13,
         "CNN FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other using CNN features.",
     )
@@ -1211,14 +1261,12 @@ def main():
             "Analyze Retrieval Accuracy",
             lambda: analyze_retrieval_accuracy(args.sample_rate),
         ),
-        8: ("Generate LiDAR Skylines", run_lidar_skyline_generation),
-        9: ("Fourier Encode Binary Skylines", run_skyline_fourier_encoder),
-        10: (
-            "Fourier Skyline Matching",
-            run_matching_analysis,
-        ),  # TODO: This is just the start, later we want to implement encoding and matching for CNN feature extractions
-        11: ("Create CNN skyline encoding", run_cnn_encoding),
-        12: ("CNN Skyline Matching", run_cnn_matching_analysis),
+        8: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
+        9: ("Encode DEM Skylines", run_dem_skyline_encoding),
+        10: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
+        11: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
+        12: ("Fourier Matching Analysis", run_matching_analysis),
+        13: ("CNN Matching Analysis", run_cnn_matching_analysis),
     }
 
     # Determine which stages to run
