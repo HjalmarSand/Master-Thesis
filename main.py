@@ -21,16 +21,6 @@ from skyline_processing import (
     skyline_matcher,
 )
 
-<<<<<<< HEAD
-# from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
-from utils.create_panoramas import build_panoramas
-from utils.DEM_skyline import create_and_save_grid, create_skyline_database
-
-# Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
-from utils.fisheye_undistorter import FisheyeUndistorter
-
-=======
->>>>>>> 640ec6a0282cb84f97b703c334ffd35aa721e290
 # from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
 from skyline_processing.segformer_segmenter import SemanticSegmenter
 from utils import orientation_path_from_gps
@@ -817,8 +807,8 @@ def run_lidar_skyline_generation():
     try:
         # This grid file will be used as input for the skyline generation.
         grid_output_path = constants.OBSERVER_GRID_PATH
-        print("\n Generating Observer Grid")
-        print(f"Grid file will be saved to: {grid_output_path}")
+        # print("\n Generating Observer Grid")
+        # print(f"Grid file will be saved to: {grid_output_path}")
 
         create_and_save_grid(
             start_coords=(
