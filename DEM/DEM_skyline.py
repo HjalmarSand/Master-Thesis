@@ -820,7 +820,7 @@ def create_skyline_database(
     skyline_mask_database = {}
 
     # Use cpu_count() - 1 to leave one core free for system responsiveness
-    num_processes = max(1, cpu_count() - 1)
+    num_processes = max(1, cpu_count() - 2)
     print(f"Distributing work across {num_processes} CPU cores...")
 
     # Create a pool of worker processes
