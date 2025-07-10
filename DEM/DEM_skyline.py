@@ -828,7 +828,7 @@ def create_skyline_database(
             )
 
             # 4. Save the numerical skyline data
-            save_skyline_data(data_path, angles, elevations, distances, skyline_points)
+            # save_skyline_data(data_path, angles, elevations, distances, skyline_points)
 
             # 5. Add a record to our database list
             record = {
@@ -869,45 +869,47 @@ def create_skyline_database(
 
 def create_and_save_grid(
     start_coords: Tuple[float, float],
+    end_coords: Tuple[float, float],
     spacing_meters: float,
-    num_points_x: int,
-    num_points_y: int,
-    output_path: Path,
 ):
     """
-    Generates a grid of coordinates and saves it to a CSV file.
-
-    The grid starts at the given coordinates and expands in the positive X (East)
-    and positive Y (North) directions.
+    Generates a grid of coordinates within a bounding box and saves it to a CSV file.
 
     Args:
-        start_coords (Tuple[float, float]): The (easting, northing) of the bottom-left point of the grid.
+        start_coords (Tuple[float, float]): The (easting, northing) of one corner of the grid.
+        end_coords (Tuple[float, float]): The (easting, northing) of the opposite corner.
         spacing_meters (float): The distance between adjacent grid points in meters.
-        num_points_x (int): The number of points in the horizontal (East-West) direction.
-        num_points_y (int): The number of points in the vertical (North-South) direction.
         output_path (Path): The file path to save the generated CSV grid.
     """
-    # print(f"\nGenerating a {num_points_x}x{num_points_y} coordinate grid...")
-    start_x, start_y = start_coords
-    # print(f"  Start Coordinate (E, N): ({start_x:.2f}, {start_y:.2f})")
+    print("\nGenerating a coordinate grid...")
     print(f"  Spacing: {spacing_meters} meters")
 
-    grid_points = []
+    # 1. Determine the bounding box regardless of corner order
+    min_easting = min(start_coords[0], end_coords[0])
+    max_easting = max(start_coords[0], end_coords[0])
+    min_northing = min(start_coords[1], end_coords[1])
+    max_northing = max(start_coords[1], end_coords[1])
 
-    for j in range(num_points_y):  # Vertical loop (Northing)
-        current_y = start_y + j * spacing_meters
-        for i in range(num_points_x):  # Horizontal loop (Easting)
-            current_x = start_x + i * spacing_meters
-            grid_points.append({"easting": current_x, "northing": current_y})
+    # 2. Use numpy to efficiently generate coordinate ranges
+    easting_range = np.arange(min_easting, max_easting, spacing_meters)
+    northing_range = np.arange(min_northing, max_northing, spacing_meters)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 3. Handle cases where the grid would be empty
+    if easting_range.size == 0 or northing_range.size == 0:
+        print(
+            "Warning: Grid is empty based on the given coordinates and spacing. No file created."
+        )
+        return
 
-    # Convert to a DataFrame and save as CSV
-    df = pd.DataFrame(grid_points)
-    df.to_csv(output_path, index=False, float_format="%.3f")
+    # 4. Create a meshgrid and flatten it to get all coordinate pairs
+    easting_grid, northing_grid = np.meshgrid(easting_range, northing_range)
 
-    # print(f"  Total points generated: {len(grid_points)}")
-    print(f"Grid saved successfully to: {output_path}")
+    return pd.DataFrame(
+        {
+            "easting": easting_grid.flatten(),
+            "northing": northing_grid.flatten(),
+        }
+    )
 
 
 def main():
@@ -968,10 +970,11 @@ if __name__ == "__main__":
                 613400.0,
                 6462200.0,
             ),  # Bottom-left corner (Easting, Northing)
+            end_coords=(
+                613400.0,
+                6462200.0,
+            ),
             spacing_meters=25.0,  # Distance between points
-            num_points_x=500,  # Number of columns
-            num_points_y=500,  # Number of rows
-            output_path=grid_output_path,
         )
 
         # === Step 2: Run the batch skyline generation using the created grid ===

@@ -814,25 +814,26 @@ def run_lidar_skyline_generation():
         print("\n Generating Observer Grid")
         print(f"Grid file will be saved to: {grid_output_path}")
 
-        create_and_save_grid(
-            start_coords=(
-                613400.0,
-                6462200.0,
-            ),  # Bottom-left corner (Easting, Northing)
-            spacing_meters=50.0,  # Distance between points
-            num_points_x=3,  # Number of columns
-            num_points_y=3,  # Number of rows
-            output_path=grid_output_path,
-        )
-
         print("\n Generating Skyline Database from Grid")
         output_db_directory = constants.DEM_OUTPUT_DIR / "skyline_database"
         viewpoint_z_height = 1.5  # Standard camera height in meters
 
         # Load the coordinates from the file we just created
         try:
-            grid_df = pd.read_csv(grid_output_path)
-            coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
+            df = create_and_save_grid(
+                start_coords=(
+                    611597.725,
+                    6458055.924,
+                ),  # Bottom-left corner (Easting, Northing)
+                end_coords=(
+                    614547.264,
+                    6463806.450,
+                ),
+                spacing_meters=10,
+            )
+
+            coords_to_process = list(zip(df["easting"], df["northing"]))
+
             print(
                 f"Successfully loaded {len(coords_to_process)} coordinates from grid file."
             )
