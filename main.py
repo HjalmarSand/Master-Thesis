@@ -114,6 +114,10 @@ def run_image_splitting():
 # and then train a neural network, hoping for good results in a timely manner, with no guarantees. Tuning estimated values from
 # Bezier curves is likely a better use of our time.
 
+# TODO: Updated idea! Perhaps we can detect the difference for where the islands align after building panoramas and segmenting them, and then we could use the difference in pixel alignment to find an angle that we want to roll them down by. We need to save this angle in a file, then we can make another pass with fisheye undistorter, with new rolls.
+
+# TODO: Another method that would work is to interpolate the path of the boat with cubic splines and hope that is accurate enough. After that we can for the locations where the pictures are taken anotate the angle offset from a baseline straight path angle. These anotated angles in a relation to the amount of curve in the path the boat takes can be used to again interpolate what we believe to be the roll angle to curve magnitude. Im not sure if this method or the one using pixel offset between islands is best. The method above could sometimes give errors if the islands are not meant to align, which could happen since we are losing some information between the cameras.
+
 
 def run_fisheye_undistortion():
     """
