@@ -6,14 +6,12 @@ __pycache__/
 .venv/
 
 dino_salad.ckpt
+output/dsm/
 
 colmap_fisheye_project/
 results/
-<<<<<<< HEAD
-lantmateri_data/
-=======
-DSM_Data
->>>>>>> arvid_dev
+DSM_Data/
+databases/
 
 *.jpg
 *.jpeg

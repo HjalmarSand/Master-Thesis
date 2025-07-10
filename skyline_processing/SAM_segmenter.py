@@ -3,7 +3,15 @@ import torch
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from segment_anything import sam_model_registry, SamPredictor
+try:
+    from segment_anything import sam_model_registry, SamPredictor
+except ImportError:
+    print("ERROR: Please install the Segment Anything library with 'pip install segment-anything'.")
+    raise ImportError("Segment Anything library is required for this script.")
+
+# Requires a SAM checkpoint to be downloaded and placed in the project root.
+# You can download the model from the official Segment-Anything git repository
+# Also pip install segment-anything if you haven't already
 
 def get_sam_predictor():
     """Initializes and returns the SAM model predictor."""

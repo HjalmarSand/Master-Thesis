@@ -1,7 +1,8 @@
-import cv2
-import numpy as np
 import math
 import os
+
+import cv2
+import numpy as np
 
 # Short script to remove tilt/roll from images based on horizon points.
 
@@ -10,10 +11,11 @@ BACK_PANO_PATH = "images/cam2_undistorted_images/undistorted_cam2_1100.png"
 
 # Horizon points for each camera
 HORIZON_POINTS = {
-    FRONT_PANO_PATH: ((308, 296),(833, 380)),
-    BACK_PANO_PATH: ((486, 401),(833, 344))
+    FRONT_PANO_PATH: ((308, 296), (833, 380)),
+    BACK_PANO_PATH: ((486, 401), (833, 344)),
 }
 OUTPUT_DIR = "output/leveled_images"
+
 
 def correct_roll(image_path, horizon_points):
     """
@@ -25,7 +27,7 @@ def correct_roll(image_path, horizon_points):
 
     Returns:
         tuple: A tuple containing the original and the corrected image as numpy arrays.
-               Returns (None, None) if the image cannot be loaded.
+            Returns (None, None) if the image cannot be loaded.
     """
     print(f"--- Processing image: {image_path} ---")
     img = cv2.imread(image_path)
@@ -40,7 +42,7 @@ def correct_roll(image_path, horizon_points):
     angle_rad = math.atan2(y2 - y1, x2 - x1)
     angle_deg = math.degrees(angle_rad)
     print(angle_deg)
-    
+
     print(f"Detected horizon angle: {angle_deg:.2f} degrees")
 
     # Rotate the image to level the horizon
@@ -54,12 +56,17 @@ def correct_roll(image_path, horizon_points):
 
     # Perform the affine warp (the actual rotation)
     # The new black areas created by the rotation will be filled with black color
-    corrected_img = cv2.warpAffine(img, rotation_matrix, (w, h),
-                                flags=cv2.INTER_CUBIC,
-                                borderMode=cv2.BORDER_CONSTANT,
-                                borderValue=(0, 0, 0))
+    corrected_img = cv2.warpAffine(
+        img,
+        rotation_matrix,
+        (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
 
     return img, corrected_img
+
 
 def main():
     """
@@ -74,7 +81,7 @@ def main():
         if not os.path.exists(img_path):
             print(f"Error: Input file not found at {img_path}. Skipping.")
             continue
-            
+
         original_img, corrected_img = correct_roll(img_path, points)
 
         if corrected_img is not None:
@@ -87,19 +94,22 @@ def main():
 
             # Display the result (original vs corrected)
             # We can draw the detected horizon line on the original for visualization
-            cv2.line(original_img, points[0], points[1], (0, 0, 255), 2) # Draw red line
-            
+            cv2.line(
+                original_img, points[0], points[1], (0, 0, 255), 2
+            )  # Draw red line
+
             # Combine images for side-by-side comparison
             comparison_image = np.hstack((original_img, corrected_img))
-            
+
             # Show the comparison
             window_title = f"Roll Correction for {basename}"
             cv2.imshow(window_title, comparison_image)
-            
+
     # Wait for a key press to close all image windows
     print("Press any key to close all image windows.")
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
