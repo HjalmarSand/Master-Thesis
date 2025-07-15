@@ -27,8 +27,8 @@ N_POINTS_TO_AVERAGE = 1  # Number of highest points to average in each sector (1
 
 
 # Query point
-VIEWPOINT_X = 613491.715
-VIEWPOINT_Y = 6462211.464
+VIEWPOINT_X = 611597.725
+VIEWPOINT_Y = 6458055.924
 VIEWPOINT_Z = 1.5
 
 
@@ -959,7 +959,7 @@ def main():
 if __name__ == "__main__":
     # Set to True to run the batch process for a grid of coordinates.
     # Set to False to run the single-point analysis with plotting.
-    RUN_BATCH_MODE = True
+    RUN_BATCH_MODE = False
 
     if RUN_BATCH_MODE:
         # === Step 1: Define and create the observer grid CSV ===

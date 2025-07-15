@@ -401,6 +401,7 @@ def run_panorama_stitching():
             output_dir=output_panorama_dir,
             orientation_csv_path=orientation_csv_path,
             manual_rotation_offset_deg=manual_rotation_offset_deg,
+            use_edge_detection=False,
         )
 
         if exit_code == 0:
