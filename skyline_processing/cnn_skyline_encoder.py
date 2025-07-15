@@ -135,5 +135,5 @@ def create_cnn_fingerprints_for_directory(input_dir: Path, output_filepath: Path
         return 1
 
     np.savez_compressed(output_filepath, **fingerprints)
-    print(f"\n✅ CNN fingerprinting complete. Data saved to '{output_filepath}'")
+    print(f"\nCNN fingerprinting complete. Data saved to '{output_filepath}'")
     return 0
