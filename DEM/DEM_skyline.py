@@ -1,4 +1,5 @@
 import json
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -6,7 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pdal
-from PIL import Image
 from tqdm import tqdm
 
 import constants
@@ -185,7 +185,7 @@ def load_single_point_cloud(
         points = pipeline.arrays[0]
 
         if len(points) == 0:
-            print(f"  No points within bounding box")
+            # print(f"  No points within bounding box")
             return None
 
         # Apply precise circular distance filter
@@ -648,10 +648,9 @@ def plot_skyline(angles, elevations, distances, viewpoint_coords, num_files):
     plt.show()
 
 
-def save_skyline_as_mask(
+def generate_skyline_mask_array(
     angles: np.ndarray,
     elevations: np.ndarray,
-    output_path: str,
     output_width: int,
     output_height: int,
     vertical_fov: float = 90.0,  # A sensible default VFOV for the mask
@@ -723,12 +722,7 @@ def save_skyline_as_mask(
     for x, y_sky in enumerate(skyline_rows):
         mask[0:y_sky, x] = 255
 
-    try:
-        mask_image = Image.fromarray(mask, mode="L")  # 'L' mode is 8-bit grayscale
-        mask_image.save(output_path)
-        # print(f"  > North-centered skyline mask successfully saved to: {output_path}")
-    except Exception as e:
-        print(f"  > Error saving mask image: {e}")
+    return mask
 
 
 def save_skyline_data(
@@ -754,117 +748,102 @@ def save_skyline_data(
     df.to_csv(output_path, index=False, float_format="%.4f")
 
 
-def create_skyline_database(
-    coords_list: List[Tuple[float, float]],
-    base_z: float,
-    output_directory: Path,
-):
-    """
-    Generates a skyline and mask for a list of coordinates and creates a database.
+# Parallel processing init
+def init_worker(laz_files: List[Path], z_height: float):
+    global global_laz_files, global_base_z
+    global_laz_files = laz_files
+    global_base_z = z_height
 
-    For each coordinate, it saves a mask PNG and a skyline data CSV, then records
-    these file paths in a master database CSV file.
+
+# This function contains the logic to process a single viewpoint.
+# It's designed to be called by the multiprocessing pool.
+def process_single_viewpoint(
+    coord_tuple: Tuple[int, Tuple[float, float]],
+) -> Optional[Tuple[str, np.ndarray]]:
+    """
+    Worker function that loads data, calculates the skyline, and generates
+    a mask for a single coordinate point.
 
     Args:
-        coords_list (List[Tuple[float, float]]): A list of (x, y) coordinates to process.
-        base_z (float): The Z-coordinate (height above ground) to use for all viewpoints.
-        output_directory (Path): The directory where all generated files will be stored.
+        coord_tuple: A tuple containing (index, (easting, northing)).
+
+    Returns:
+        A tuple of (point_id, mask_array) on success, or None on failure.
     """
-    print("\n===== STARTING BATCH SKYLINE DATABASE GENERATION =====")
-    print(f"Total coordinates to process: {len(coords_list)}")
-    print(f"Output will be saved in: {output_directory}")
+    index, (x, y) = coord_tuple
+    viewpoint_coords = (x, y, global_base_z)
+    point_id = f"dem_vp_{x:.0f}_{y:.0f}"
 
-    # Create the output directory if it doesn't exist
-    output_directory.mkdir(parents=True, exist_ok=True)
-    db_path = output_directory / "skyline_database.csv"
-    database_records = []
+    try:
+        combined_points = load_multiple_point_clouds(
+            global_laz_files, viewpoint_coords, SEARCH_RADIUS
+        )
+        if combined_points is None or len(combined_points) == 0:
+            return None
 
-    # Pre-find LAZ files once to avoid repeating the search
-    all_laz_files = find_laz_files()
-
-    progress_bar = tqdm(
-        coords_list,
-        desc="Processing Grid Points",
-        unit="point",
-        bar_format="{l_bar}{bar:40}{r_bar}{bar:-10b}",  # A nice clean bar format
-    )
-
-    # Loop through each coordinate in the grid
-    for i, (x, y) in enumerate(progress_bar):
-        print(
-            f"--- Processing Grid Point {i + 1}/{len(coords_list)}: ({x:.2f}, {y:.2f}) ---"
+        angles, elevations, _, _ = calculate_skyline(
+            combined_points,
+            viewpoint_coords,
+            SEARCH_RADIUS,
+            ANGLE_STEP,
+            MIN_DISTANCE,
+            avg_top_n_points=1,
         )
 
-        viewpoint_coords = (x, y, base_z)
+        mask_array = generate_skyline_mask_array(
+            angles,
+            elevations,
+            constants.PANORAMA_IMG_WIDTH,
+            constants.PANORAMA_IMG_HEIGHT,
+        )
+        return (point_id, mask_array)
 
-        # Create unique filenames for this grid point's output
-        file_identifier = f"vp_{x:.0f}_{y:.0f}"
-        mask_path = output_directory / f"mask_{file_identifier}.png"
-        data_path = output_directory / f"skyline_{file_identifier}.csv"
+    except Exception as e:
+        return None
 
-        try:
-            # 1. Load relevant point clouds for the current viewpoint
-            combined_points = load_multiple_point_clouds(
-                all_laz_files, viewpoint_coords, SEARCH_RADIUS
-            )
 
-            # 2. Calculate the skyline
-            angles, elevations, distances, skyline_points = calculate_skyline(
-                combined_points,
-                viewpoint_coords,
-                SEARCH_RADIUS,
-                ANGLE_STEP,
-                MIN_DISTANCE,
-                avg_top_n_points=N_POINTS_TO_AVERAGE,
-            )
+def create_skyline_database(
+    coords_list: List[Tuple[float, float]], base_z: float
+) -> dict:
+    """
+    Generates a skyline mask for a list of coordinates in parallel and returns
+    them in a dictionary.
+    """
+    print("\n===== STARTING PARALLEL SKYLINE DATABASE GENERATION =====")
+    print(f"Total coordinates to process: {len(coords_list)}")
 
-            # 3. Save the skyline mask
-            save_skyline_as_mask(
-                angles,
-                elevations,
-                str(mask_path),  # Ensure path is a string for older libs
-                MASK_WIDTH,
-                MASK_HEIGHT,
-            )
+    all_laz_files = find_laz_files()
 
-            # 4. Save the numerical skyline data
-            # save_skyline_data(data_path, angles, elevations, distances, skyline_points)
+    # Prepare tasks for the pool. Enumerate gives us an index for each coordinate.
+    tasks = list(enumerate(coords_list))
 
-            # 5. Add a record to our database list
-            record = {
-                "easting": x,
-                "northing": y,
-                "z_height": base_z,
-                "mask_path": mask_path.name,
-                "skyline_data_path": data_path.name,
-                "status": "success",
-            }
-            database_records.append(record)
+    skyline_mask_database = {}
 
-        except Exception as e:
-            print(f"  !!! ERROR processing point ({x:.2f}, {y:.2f}): {e}")
-            # Add a failure record to the database
-            record = {
-                "easting": x,
-                "northing": y,
-                "z_height": base_z,
-                "mask_path": "",
-                "skyline_data_path": "",
-                "status": f"failure: {e}",
-            }
-            database_records.append(record)
-            continue  # Move to the next point
+    # Use cpu_count() - 1 to leave one core free for system responsiveness
+    num_processes = max(1, cpu_count() - 2)
+    print(f"Distributing work across {num_processes} CPU cores...")
 
-    # After the loop, save the collected records into the master database CSV
-    if database_records:
-        print(f"\n--- Batch process finished. Saving database to {db_path} ---")
-        db_df = pd.DataFrame(database_records)
-        db_df.to_csv(db_path, index=False)
-        print("Database saved successfully.")
-    else:
-        print("No coordinates were processed.")
+    # Create a pool of worker processes
+    with Pool(
+        processes=num_processes,
+        initializer=init_worker,
+        initargs=(all_laz_files, base_z),
+    ) as pool:
+        # Use imap_unordered to process tasks in parallel and get results as they complete.
+        # This allows the tqdm progress bar to update in real-time.
+        results_iterator = pool.imap_unordered(process_single_viewpoint, tasks)
 
-    print("===== BATCH SKYLINE GENERATION COMPLETE =====")
+        for result in tqdm(
+            results_iterator, total=len(tasks), desc="Generating DEM Skylines"
+        ):
+            if result is not None:
+                point_id, mask_array = result
+                skyline_mask_database[point_id] = mask_array
+
+    print(
+        f"\n===== PARALLEL SKYLINE GENERATION COMPLETE ({len(skyline_mask_database)} successful) ====="
+    )
+    return skyline_mask_database
 
 
 def create_and_save_grid(
@@ -910,6 +889,7 @@ def create_and_save_grid(
             "northing": northing_grid.flatten(),
         }
     )
+<<<<<<< HEAD
 
 
 def main():
@@ -1006,3 +986,5 @@ if __name__ == "__main__":
     else:
         # Run the original single-point analysis with interactive plots
         main()
+=======
+>>>>>>> arvid_dev
