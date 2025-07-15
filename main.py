@@ -877,7 +877,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
-def run_lidar_skyline_generation(batch_size: int = 100):
+def run_lidar_skyline_generation(batch_size: int = 5):
     """
     Stage 8: Generate a LiDAR skyline database and save the raw masks to a file.
     This version processes data in batches to prevent data loss on crash and allows
@@ -1015,7 +1015,7 @@ def run_dem_skyline_encoding():
         mask_db_path = db_root_dir / "dem_database" / "skyline_masks.npz"
 
         if not mask_db_path.is_file():
-            print(f"❌ DEM skyline mask database not found at '{mask_db_path}'.")
+            print(f" DEM skyline mask database not found at '{mask_db_path}'.")
             print("   Please run Stage 8 first.")
             return False
 
@@ -1100,10 +1100,10 @@ def run_skyline_fourier_encoder():
                     break
                 else:
                     print(
-                        f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
+                        f"\n Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
                     )
             except ValueError:
-                print("\n❌ Invalid input. Please enter a number.")
+                print("\n Invalid input. Please enter a number.")
 
         print(f"\n--- Fingerprinting skylines for dataset: {selected_dir.name} ---")
 
@@ -1185,9 +1185,9 @@ def run_matching_analysis():
                     selected_fp_path = available_fp_files[choice_idx]
                     break
                 else:
-                    print("❌ Invalid choice.")
+                    print(" Invalid choice.")
             except ValueError:
-                print("❌ Please enter a number.")
+                print(" Please enter a number.")
 
         if "windowed" in str(selected_fp_path):
             num_windows = 4
