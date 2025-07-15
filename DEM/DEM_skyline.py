@@ -889,7 +889,6 @@ def create_and_save_grid(
             "northing": northing_grid.flatten(),
         }
     )
-<<<<<<< HEAD
 
 
 def main():
@@ -916,14 +915,6 @@ def main():
         )
 
         print(f"Skyline calculated: {len(angles)} directions")
-
-        save_skyline_as_mask(
-            angles,
-            elevations,
-            MASK_OUTPUT_PATH,
-            MASK_WIDTH,
-            MASK_HEIGHT,
-        )
 
         plot_skyline(angles, elevations, distances, viewpoint_coords, len(laz_files))
 
@@ -986,5 +977,3 @@ if __name__ == "__main__":
     else:
         # Run the original single-point analysis with interactive plots
         main()
-=======
->>>>>>> arvid_dev

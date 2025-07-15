@@ -877,66 +877,119 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
-def run_lidar_skyline_generation():
+def run_lidar_skyline_generation(batch_size: int = 100):
     """
     Stage 8: Generate a LiDAR skyline database and save the raw masks to a file.
+    This version processes data in batches to prevent data loss on crash and allows
+    resuming from a previously saved state.
+
+    Args:
+        batch_size (int): The number of coordinates to process in each batch.
     """
     print_stage_header(
         9,
-        "LIDAR SKYLINE MASK GENERATION",
+        "LIDAR SKYLINE MASK GENERATION (BATCH-ENABLED)",
         "Generates skyline masks from LAZ files and saves them as a NumPy database.",
     )
 
     try:
-        # Part 1: Define and create the grid of observer points
+        # --- Part 1: Define paths and initial setup ---
+        project_root = Path(__file__).resolve().parent
+        output_dir = project_root / "databases" / "dem_database"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "skyline_masks.npz"
+
+        # --- Part 2: Generate the total grid of observer points ---
         print("\n--- Generating Observer Grid ---")
         grid_df = create_and_save_grid(
             start_coords=(611597.725, 6458055.924),
             end_coords=(614547.264, 6463806.450),
             spacing_meters=25.0,
         )
-        coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
-        print(f"Generated a grid with {len(coords_to_process)} observer points.")
-
-        # Part 2: Generate the simulated skyline masks in-memory
-        skyline_mask_database = create_skyline_database(
-            coords_list=coords_to_process, base_z=1.5
+        all_coords_tuples = list(zip(grid_df["easting"], grid_df["northing"]))
+        print(
+            f"Generated a grid with a total of {len(all_coords_tuples)} observer points."
         )
 
-        if not skyline_mask_database:
-            print("Simulated skyline database generation failed or returned empty.")
-            return False
+        # --- Part 3: Handle existing data and user choice (Resume or Overwrite) ---
+        full_database = {}
+        coords_to_process = all_coords_tuples
 
-        # Part 3: Save the generated database of NumPy arrays to a single file
-        project_root = Path(__file__).parent
-        output_dir = project_root / "databases" / "dem_database"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if output_path.exists():
+            print(f"\nDatabase file already exists at: {output_path}")
+            while True:
+                choice_str = input(
+                    "Choose an action: [0] Resume/Continue, [1] Overwrite/Start Fresh: "
+                )
+                try:
+                    choice_idx = int(choice_str)
+                    if choice_idx in [0, 1]:
+                        break
+                    else:
+                        print("Invalid input. Please enter 0 or 1.")
+                except ValueError:
+                    print("Invalid input. Please enter a number.")
 
-        while true:
-            choice_str = input("Overwrite database? [0 or 1]: ")
+            if choice_idx == 1:  # Overwrite
+                print("User chose to overwrite. Starting fresh.")
+                # No need to delete file, np.savez_compressed will overwrite it
+            else:  # Resume
+                print("Resuming from existing database...")
+                # Load the already processed data
+                loaded_data = np.load(output_path)
+                full_database = dict(loaded_data)
 
-            try:
-                choice_idx = int(choice_str)
-                if 0 <= choice_idx <= 1:
-                    selected = choice_idx
-                    break
-                else:
-                    print("\nInvalid input. Please enter 0 or 1")
-            except ValueError:
-                print("\nInvalid input. Please enter a number.")
+                # Determine which coordinates are still missing
+                processed_keys = set(full_database.keys())
+                coords_to_process = [
+                    (e, n)
+                    for e, n in all_coords_tuples
+                    if f"{e}_{n}" not in processed_keys
+                ]
+                print(f"{len(processed_keys)} points already processed.")
+                print(f"{len(coords_to_process)} points remaining.")
 
-        if choice_str == 1:
-            output_path = output_dir / "skyline_masks.npz"
-
-            print(f"\n--- Saving raw DEM skyline masks to {output_path} ---")
-            np.savez_compressed(output_path, **skyline_mask_database)
-
-            print(
-                f"\nLiDAR skyline mask generation complete. Saved to '{output_path}'."
-            )
+        if not coords_to_process:
+            print("\nAll coordinates have already been processed. Nothing to do.")
             return True
-        else:
-            return False
+
+        # --- Part 4: Process the coordinates in batches ---
+        num_remaining = len(coords_to_process)
+        total_batches = (
+            num_remaining + batch_size - 1
+        ) // batch_size  # Ceiling division
+
+        print(
+            f"\n--- Starting skyline generation for {num_remaining} points in {total_batches} batches ---"
+        )
+
+        for i in range(0, num_remaining, batch_size):
+            batch_num = (i // batch_size) + 1
+            print(f"\n--- Processing Batch {batch_num} of {total_batches} ---")
+
+            # Get the coordinates for the current batch
+            batch_coords = coords_to_process[i : i + batch_size]
+
+            # Generate the simulated skyline masks for this batch
+            # IMPORTANT: Assumes create_skyline_database returns a dict with string keys 'easting_northing'
+            batch_result = create_skyline_database(coords_list=batch_coords, base_z=1.5)
+
+            if not batch_result:
+                print(f"Warning: Batch {batch_num} returned no results. Continuing...")
+                continue
+
+            # Update the main database in memory with the results from the batch
+            full_database.update(batch_result)
+
+            # Save the *entire updated database* to disk. This is the crucial step.
+            print(f"  -> Saving {len(full_database)} total items to {output_path}...")
+            np.savez_compressed(output_path, **full_database)
+            print(f"  -> Batch {batch_num} complete and progress saved.")
+
+        print(
+            f"\nLiDAR skyline mask generation complete. All {len(full_database)} masks saved to '{output_path}'."
+        )
+        return True
 
     except Exception as e:
         print(f"An error occurred during LiDAR processing: {e}")
