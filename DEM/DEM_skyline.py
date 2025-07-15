@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pdal
+from scipy.signal import medfilt
 from tqdm import tqdm
 
 import constants
@@ -27,8 +28,8 @@ N_POINTS_TO_AVERAGE = 1  # Number of highest points to average in each sector (1
 
 
 # Query point
-VIEWPOINT_X = 613491.715
-VIEWPOINT_Y = 6462211.464
+VIEWPOINT_X = 611597.725
+VIEWPOINT_Y = 6458055.924
 VIEWPOINT_Z = 1.5
 
 
@@ -701,10 +702,15 @@ def generate_skyline_mask_array(
         output_azimuths, wrapped_angles, wrapped_elevations, period=360
     )
 
-    # Roll the interpolated elevations so that North (0°) is at the center of the image
+    # Apply a median filter to the interpolated skyline.
+    # The kernel_size should be an odd number. A small value like 5 is a good
+    # starting point as it removes narrow spikes without blunting real features.
+    filtered_elevations = medfilt(interpolated_elevations, kernel_size=5)
+
+    # Yaw the interpolated elevations so that North (0°) is at the center of the image
     # The interpolation was done on 0-360, so 0 degrees is at the start. We want it in the middle.
     pixels_to_roll = -int(output_width / 2)
-    final_elevations = np.roll(interpolated_elevations, pixels_to_roll)
+    final_elevations = np.roll(filtered_elevations, pixels_to_roll)
 
     # Calculate the vertical pixel position of the skyline for each column.
     # Elevation `+vertical_fov/2` is at the top row (0).
@@ -819,8 +825,8 @@ def create_skyline_database(
 
     skyline_mask_database = {}
 
-    # Use cpu_count() - 1 to leave one core free for system responsiveness
-    num_processes = max(1, cpu_count() - 2)
+    # Use cpu_count() - 2 to leave two cores free for system responsiveness
+    num_processes = max(1, cpu_count() - 4)
     print(f"Distributing work across {num_processes} CPU cores...")
 
     # Create a pool of worker processes
@@ -889,3 +895,91 @@ def create_and_save_grid(
             "northing": northing_grid.flatten(),
         }
     )
+
+
+def main():
+    print("MULTI-LAZ SKYLINE GENERATOR \n")
+
+    try:
+        laz_files = find_laz_files()
+
+        print(f"\nPreparing to process {len(laz_files)} LAZ files...")
+        viewpoint_coords = get_viewpoint_coordinates()
+        combined_points = load_multiple_point_clouds(
+            laz_files, viewpoint_coords, SEARCH_RADIUS
+        )
+
+        print(f"\nCalculating skyline with {ANGLE_STEP}° resolution...")
+
+        angles, elevations, distances, skyline_points = calculate_skyline(
+            combined_points,
+            viewpoint_coords,
+            SEARCH_RADIUS,
+            ANGLE_STEP,
+            MIN_DISTANCE,
+            avg_top_n_points=N_POINTS_TO_AVERAGE,
+        )
+
+        print(f"Skyline calculated: {len(angles)} directions")
+
+        plot_skyline(angles, elevations, distances, viewpoint_coords, len(laz_files))
+
+        print("\n=== MULTI-LAZ SKYLINE GENERATION COMPLETE ===")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    # Set to True to run the batch process for a grid of coordinates.
+    # Set to False to run the single-point analysis with plotting.
+    RUN_BATCH_MODE = False
+
+    if RUN_BATCH_MODE:
+        # === Step 1: Define and create the observer grid CSV ===
+        # This grid file can then be used in the main pipeline.
+        grid_output_path = Path("input/observer_grid.csv")
+        create_and_save_grid(
+            start_coords=(
+                613400.0,
+                6462200.0,
+            ),  # Bottom-left corner (Easting, Northing)
+            end_coords=(
+                613400.0,
+                6462200.0,
+            ),
+            spacing_meters=25.0,  # Distance between points
+        )
+
+        # === Step 2: Run the batch skyline generation using the created grid ===
+        print("\n--- Starting skyline generation using the new grid file ---")
+
+        # Load the coordinates from the file we just created
+        try:
+            grid_df = pd.read_csv(grid_output_path)
+            # Convert DataFrame columns to a list of (easting, northing) tuples
+            coords_to_process = list(zip(grid_df["easting"], grid_df["northing"]))
+        except FileNotFoundError:
+            print(f"ERROR: Grid file not found at {grid_output_path}. Aborting.")
+            exit()
+        except KeyError:
+            print(
+                "ERROR: Grid file must contain 'easting' and 'northing' columns. Aborting."
+            )
+            exit()
+
+        # Define the directory to store all database files
+        output_db_directory = Path("output/skyline_database")
+        viewpoint_z_height = 1.5
+
+        # Run the database creation function
+        create_skyline_database(
+            coords_to_process, viewpoint_z_height, output_db_directory
+        )
+
+    else:
+        # Run the original single-point analysis with interactive plots
+        main()

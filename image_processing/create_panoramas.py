@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import cv2
@@ -6,6 +7,76 @@ import pandas as pd
 from tqdm import tqdm
 
 from utils.utility import get_original_numbered_file_name
+
+
+def find_horizon_roll_angle(image: np.ndarray) -> float or None:
+    """
+    Analyzes an image to find the dominant horizon line and returns its roll angle.
+    This is the core detection logic.
+    """
+    # --- Tuning Parameters (can be moved to a config file or constants at the top) ---
+    CANNY_THRESHOLD_1 = 50
+    CANNY_THRESHOLD_2 = 150
+    BLUR_KERNEL_SIZE = (5, 5)
+    HOUGH_THRESHOLD = 50
+    HOUGH_MIN_LINE_LENGTH = 50
+    HOUGH_MAX_LINE_GAP = 10
+    ROI_BOTTOM_IGNORE_PERCENT = 0.35
+    HORIZONTAL_ANGLE_TOLERANCE = 30.0
+
+    (h, w) = image.shape[:2]
+    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred_image = cv2.GaussianBlur(gray_image, BLUR_KERNEL_SIZE, 0)
+    edges = cv2.Canny(blurred_image, CANNY_THRESHOLD_1, CANNY_THRESHOLD_2)
+
+    mask = np.zeros_like(edges)
+    roi_bottom_y = int(h * (1 - ROI_BOTTOM_IGNORE_PERCENT))
+    cv2.rectangle(mask, (0, 0), (w, roi_bottom_y), 255, -1)
+    masked_edges = cv2.bitwise_and(edges, mask)
+
+    lines = cv2.HoughLinesP(
+        masked_edges,
+        1,
+        np.pi / 180,
+        threshold=HOUGH_THRESHOLD,
+        minLineLength=HOUGH_MIN_LINE_LENGTH,
+        maxLineGap=HOUGH_MAX_LINE_GAP,
+    )
+
+    if lines is None:
+        return None
+
+    candidate_lines = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+        if abs(angle) < HORIZONTAL_ANGLE_TOLERANCE:
+            length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+            candidate_lines.append({"angle": angle, "length": length})
+
+    if not candidate_lines:
+        return None
+
+    best_line_info = max(candidate_lines, key=lambda x: x["length"])
+    return best_line_info["angle"]
+
+
+def correct_image_roll(image: np.ndarray, roll_angle: float) -> np.ndarray:
+    """Rotates an image to counteract a given roll angle."""
+    if (
+        roll_angle is None or abs(roll_angle) < 0.1
+    ):  # Don't process if no angle or angle is tiny
+        return image
+
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    correction_angle = -roll_angle
+
+    M = cv2.getRotationMatrix2D(center, correction_angle, 1.0)
+    corrected_image = cv2.warpAffine(
+        image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT
+    )  # Black borders
+    return corrected_image
 
 
 def rotate_panorama_by_orientation(panorama_image, orientation_degrees):
@@ -89,6 +160,71 @@ def create_panorama(cam1_left_path, cam1_right_path, cam2_left_path, cam2_right_
     return panorama
 
 
+# Use to test only one quadruplet of images
+# Before stitching front and back images, we can apply edge detection to correct the roll of the images
+def create_panorama_edge_detection(
+    cam1_left_path, cam1_right_path, cam2_left_path, cam2_right_path, verbose=False
+):
+    """
+    Creates a roll-corrected 360-degree panorama from four 90-degree views.
+
+    It first stitches front and back 180-degree views to detect the horizon roll,
+    then corrects both individual images before the final stitching.
+
+    Args:
+        (paths to the four images)
+        verbose (bool): If True, prints diagnostic messages for each step.
+
+    Returns:
+        np.ndarray: The stitched and roll-corrected panoramic image, or None if an error occurred.
+    """
+    cam1_left = cv2.imread(str(cam1_left_path))
+    cam1_right = cv2.imread(str(cam1_right_path))
+    cam2_left = cv2.imread(str(cam2_left_path))
+    cam2_right = cv2.imread(str(cam2_right_path))
+
+    all_images = [cam1_left, cam1_right, cam2_left, cam2_right]
+    if any(img is None for img in all_images):
+        tqdm.write(
+            "Warning: Could not load one or more images for stitching. Skipping."
+        )
+        return None
+
+    # Assuming cam1 is front, cam2 is back
+    front_view_180 = np.concatenate([cam1_left, cam1_right], axis=1)
+    back_view_180 = np.concatenate(
+        [cam2_right, cam2_left], axis=1
+    )  # Note physical order
+
+    front_roll_angle = find_horizon_roll_angle(front_view_180)
+    back_roll_angle = find_horizon_roll_angle(back_view_180)
+
+    if verbose:
+        front_msg = (
+            f"{front_roll_angle:.2f}°" if front_roll_angle is not None else "Not found"
+        )
+        back_msg = (
+            f"{back_roll_angle:.2f}°" if back_roll_angle is not None else "Not found"
+        )
+        tqdm.write(f"  > Detected Rolls: Front={front_msg}, Back={back_msg}")
+
+    # Correct each of the four original images
+    corrected_c1_left = correct_image_roll(cam1_left, front_roll_angle)
+    corrected_c1_right = correct_image_roll(cam1_right, front_roll_angle)
+    corrected_c2_left = correct_image_roll(cam2_left, back_roll_angle)
+    corrected_c2_right = correct_image_roll(cam2_right, back_roll_angle)
+
+    # Stitch the final 360-degree panorama in the specified order
+    final_images_in_order = [
+        corrected_c2_right,
+        corrected_c1_left,
+        corrected_c1_right,
+        corrected_c2_left,
+    ]
+
+    return np.concatenate(final_images_in_order, axis=1)
+
+
 def build_panoramas(
     cam1_left_dir,
     cam1_right_dir,
@@ -98,6 +234,7 @@ def build_panoramas(
     orientation_csv_path=None,
     apply_rotation=True,
     manual_rotation_offset_deg=16.0,
+    use_edge_detection=False,
 ):  # With our undistortion there seems to be about a 16 degree offset between the boats and the cameras orientation
     """
     Finds all corresponding sets of four images and stitches them into panoramas.
@@ -189,7 +326,10 @@ def build_panoramas(
             )
             continue
 
-        panorama = create_panorama(*all_paths)
+        if use_edge_detection:
+            panorama = create_panorama_edge_detection(*all_paths)
+        else:
+            panorama = create_panorama(*all_paths)
 
         if panorama is not None:
             successful_panoramas += 1

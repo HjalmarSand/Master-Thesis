@@ -15,7 +15,7 @@ LIDAR_DATA_DIR = PROJECT_ROOT / "DSM_Data" / "cleaned_laser"
 
 LIDAR_SKYLINE_RESOLUTION = (
     64 * 24
-)  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) / this factor
+)  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) divided by this factor
 
 LIDAR_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM" / "lidar_skyline"
 
