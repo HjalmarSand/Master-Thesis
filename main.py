@@ -999,6 +999,7 @@ def run_lidar_skyline_generation(batch_size: int = 5):
         return False
 
 
+# TODO: Maybe one thing we want to do, since the panoramas we have lose some information in the borders where the two camera images connect, perhaps before rotating the panoramas in north normalized direction, just like the dems are, we keep track of how much they need to be rotated, and then where the edges between the front and back facing images are, and cut out a couple of percent HFOV from the DEM simulated image there as well. This is because the DEM image has perfect 360deg coverage while our panoramas has maybe 2x175deg or something similar in practice, even though it should be 2x180deg.
 def run_dem_skyline_encoding():
     """
     Stage 9: Load a DEM skyline mask database and create all fingerprint types.
@@ -1331,9 +1332,9 @@ def run_cnn_matching_analysis():
                     selected_fp_path = available_fp_files[choice_idx]
                     break
                 else:
-                    print("❌ Invalid choice.")
+                    print("Invalid choice.")
             except ValueError:
-                print("❌ Please enter a number.")
+                print("Please enter a number.")
 
         # The CNN encoder also uses 4 windows, so we can reuse the matcher perfectly
         results = skyline_matcher.run_self_matching(
@@ -1341,7 +1342,7 @@ def run_cnn_matching_analysis():
         )
 
         if results:
-            print("\n--- Top 5 Self-Matching Results (CNN) ---")
+            print("\nTop 5 Self-Matching Results (CNN)")
             for result in results:
                 print(f"\n  Query: {result['query']}")
                 top_matches_list = result.get("top_matches", [])
