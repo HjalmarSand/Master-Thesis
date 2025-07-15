@@ -707,7 +707,7 @@ def generate_skyline_mask_array(
     # starting point as it removes narrow spikes without blunting real features.
     filtered_elevations = medfilt(interpolated_elevations, kernel_size=5)
 
-    # Roll the interpolated elevations so that North (0°) is at the center of the image
+    # Yaw the interpolated elevations so that North (0°) is at the center of the image
     # The interpolation was done on 0-360, so 0 degrees is at the start. We want it in the middle.
     pixels_to_roll = -int(output_width / 2)
     final_elevations = np.roll(filtered_elevations, pixels_to_roll)
@@ -826,7 +826,7 @@ def create_skyline_database(
     skyline_mask_database = {}
 
     # Use cpu_count() - 2 to leave two cores free for system responsiveness
-    num_processes = max(1, cpu_count() - 2)
+    num_processes = max(1, cpu_count() - 4)
     print(f"Distributing work across {num_processes} CPU cores...")
 
     # Create a pool of worker processes
