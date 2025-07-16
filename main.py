@@ -1118,103 +1118,154 @@ def run_single_point_validation():
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
+# In main.py, replace the whole function
+
+
 def run_lidar_skyline_generation():
     """
-    Stage 13: Generate a LiDAR skyline database using a stable, multi-process architecture.
+    Stage 13: Generate a LiDAR skyline database using a resilient, batch-based architecture.
     """
-    print_stage_header(13, "LIDAR SKYLINE MASK GENERATION (STABLE)")
+    print_stage_header(13, "LIDAR SKYLINE MASK GENERATION (BATCHED & RESILIENT)")
 
     try:
+        BATCH_SIZE = 100  # Process 100 viewpoints per batch
         project_root = Path(__file__).resolve().parent
         output_dir = project_root / "databases" / "dem_database"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "skyline_masks.npz"
 
-        print("\nPreparing Tasks")
         grid_df = create_and_save_grid(
             start_coords=(611597.725, 6458055.924),
             end_coords=(614547.264, 6463806.450),
             spacing_meters=25.0,
         )
-        all_coords = list(zip(grid_df["easting"], grid_df["northing"]))
+        # Create a lookup from point_id to coordinates
+        grid_df["point_id"] = grid_df.apply(
+            lambda row: f"dem_vp_{row['easting']:.0f}_{row['northing']:.0f}", axis=1
+        )
+        coord_lookup = grid_df.set_index("point_id")[["easting", "northing"]].to_dict(
+            "index"
+        )
+        all_point_ids = grid_df["point_id"].tolist()
         all_laz_files = find_laz_files()
 
-        # Step 1: Pre-calculate the full list of tasks (coord, file)
-        tasks = []
-        print("Finding relevant LAZ files for each grid point...")
-        for x, y in tqdm(all_coords, desc="Pre-calculating tasks"):
-            viewpoint_coords = (x, y, 1.5)
-            point_id = f"dem_vp_{x:.0f}_{y:.0f}"
-            for laz_file in all_laz_files:
-                if check_file_relevance_from_json(laz_file, viewpoint_coords):
-                    tasks.append((point_id, viewpoint_coords, laz_file))
+        # 2. RESUME LOGIC
+        processed_ids = set()
+        if output_path.exists():
+            with np.load(output_path) as existing_data:
+                processed_ids = set(existing_data.keys())
+            print(
+                f"Found existing database with {len(processed_ids)} processed points."
+            )
 
-        print(f"Total tasks to process: {len(tasks)}")
+        point_ids_to_process = [
+            pid for pid in all_point_ids if pid not in processed_ids
+        ]
+        if not point_ids_to_process:
+            print(
+                "\n✅ All points have already been processed. Database is up to date."
+            )
+            return True
 
-        # Step 2: Run the simplified workers in parallel
+        print(
+            f"Total points to process: {len(point_ids_to_process)} / {len(all_point_ids)}"
+        )
+
+        # 3. BATCHING
+        batches = [
+            point_ids_to_process[i : i + BATCH_SIZE]
+            for i in range(0, len(point_ids_to_process), BATCH_SIZE)
+        ]
+        num_processes = max(1, cpu_count() - 10)
         worker_config = {
             "SEARCH_RADIUS": constants.SEARCH_RADIUS,
             "ANGLE_STEP": constants.ANGLE_STEP,
             "MIN_DISTANCE": constants.MIN_DISTANCE,
         }
-        num_processes = max(1, cpu_count() - 2)
-        print(f"Distributing work across {num_processes} CPU cores...")
 
-        partial_results = []
-        with Pool(
-            processes=num_processes, initializer=init_worker, initargs=(worker_config,)
-        ) as pool:
-            results_iterator = pool.imap_unordered(process_viewpoint_and_file, tasks)
-            for result in tqdm(
-                results_iterator, total=len(tasks), desc="Processing LAZ files"
-            ):
-                if result and result[1] is not None:
-                    partial_results.append(result)
+        # 4. MAIN BATCH PROCESSING LOOP
+        for i, batch_point_ids in enumerate(batches):
+            print_separator(f"Processing Batch {i + 1} / {len(batches)}")
 
-        # Step 3: Aggregate the results from all workers
-        print("\nAggregating Results")
-        skyline_data = {}
-        for point_id, (azimuths, elevations) in tqdm(
-            partial_results, desc="Aggregating"
-        ):
-            if point_id not in skyline_data:
-                num_bins = int(360 / constants.ANGLE_STEP)
-                # 1. Change the default for new viewpoints here
-                skyline_data[point_id] = np.full(num_bins, 0.0)
+            # A. Generate tasks just for this batch
+            batch_tasks = []
+            print("Preparing tasks for the current batch...")
+            for point_id in tqdm(batch_point_ids, desc="Pre-calculating tasks"):
+                coords = coord_lookup[point_id]
+                viewpoint_coords = (coords["easting"], coords["northing"], 1.5)
+                for laz_file in all_laz_files:
+                    if check_file_relevance_from_json(laz_file, viewpoint_coords):
+                        batch_tasks.append((point_id, viewpoint_coords, laz_file))
 
-            df = pd.DataFrame({"azimuth": azimuths, "elevation": elevations})
-            num_bins = len(skyline_data[point_id])
-            angle_labels = np.arange(num_bins)
-            angle_bin_edges = np.linspace(0, 360, num_bins + 1)
-            df["bin"] = pd.cut(
-                df["azimuth"],
-                bins=angle_bin_edges,
-                labels=angle_labels,
-                right=False,
-                include_lowest=True,
+            if not batch_tasks:
+                print("No relevant tasks for this batch. Skipping.")
+                continue
+
+            # B. Run workers for the batch
+            print(
+                f"Distributing {len(batch_tasks)} tasks across {num_processes} CPU cores..."
             )
-            max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
-            # 2. Change the default for new data chunks here
-            new_maxes = np.full(num_bins, 0.0)
-            new_maxes[max_in_bin.index] = max_in_bin.values
-            skyline_data[point_id] = np.maximum(skyline_data[point_id], new_maxes)
+            partial_results = []
+            with Pool(
+                processes=num_processes,
+                initializer=init_worker,
+                initargs=(worker_config,),
+            ) as pool:
+                iterator = pool.imap_unordered(process_viewpoint_and_file, batch_tasks)
+                for result in tqdm(
+                    iterator, total=len(batch_tasks), desc="Processing LAZ files"
+                ):
+                    if result and result[1] is not None:
+                        partial_results.append(result)
 
-        # Step 4: Generate final masks from aggregated data
-        print("\nGenerating Final Masks")
-        final_skyline_masks = {}
-        for point_id, elevations in tqdm(skyline_data.items(), desc="Generating Masks"):
-            num_bins = len(elevations)
-            angles = np.linspace(0, 360, num_bins, endpoint=False)
-            final_skyline_masks[point_id] = generate_skyline_mask_array(
-                angles,
-                elevations,
-                constants.PANORAMA_IMG_WIDTH,
-                constants.PANORAMA_IMG_HEIGHT,
+            # C. Aggregate and generate masks for the batch
+            batch_skyline_data = {}
+            for point_id, (azimuths, elevations) in partial_results:
+                if point_id not in batch_skyline_data:
+                    num_bins = int(360 / constants.ANGLE_STEP)
+                    batch_skyline_data[point_id] = np.full(num_bins, 0.0)
+
+                df = pd.DataFrame({"azimuth": azimuths, "elevation": elevations})
+                num_bins = len(batch_skyline_data[point_id])
+                angle_labels = np.arange(num_bins)
+                angle_bin_edges = np.linspace(0, 360, num_bins + 1)
+                df["bin"] = pd.cut(
+                    df["azimuth"],
+                    bins=angle_bin_edges,
+                    labels=angle_labels,
+                    right=False,
+                    include_lowest=True,
+                )
+                max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
+                new_maxes = np.full(num_bins, 0.0)
+                new_maxes[max_in_bin.index] = max_in_bin.values
+                batch_skyline_data[point_id] = np.maximum(
+                    batch_skyline_data[point_id], new_maxes
+                )
+
+            batch_final_masks = {}
+            for point_id, elevations in batch_skyline_data.items():
+                num_bins = len(elevations)
+                angles = np.linspace(0, 360, num_bins, endpoint=False)
+                batch_final_masks[point_id] = generate_skyline_mask_array(
+                    angles,
+                    elevations,
+                    constants.PANORAMA_IMG_WIDTH,
+                    constants.PANORAMA_IMG_HEIGHT,
+                )
+
+            # D. Incremental Save
+            print(
+                f"Saving results for {len(batch_final_masks)} points from this batch..."
             )
+            # Load existing data, update it, and save back
+            existing_data = {}
+            if output_path.exists():
+                existing_data = dict(np.load(output_path))
 
-        # Step 5: Save the final database
-        print(f"\nSaving final database with {len(final_skyline_masks)} masks")
-        np.savez_compressed(output_path, **final_skyline_masks)
+            existing_data.update(batch_final_masks)
+            np.savez_compressed(output_path, **existing_data)
+            print(f"Database now contains {len(existing_data)} total masks.")
 
         print(f"\n✅ LiDAR skyline mask generation complete. Saved to '{output_path}'.")
         return True

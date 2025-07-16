@@ -48,9 +48,6 @@ def check_file_relevance_from_json(
 
     try:
         if not json_path.exists():
-            print(
-                f"  - Verdict: RELEVANT (Reason: No .json metadata file found at '{json_path}')"
-            )
             return True
 
         with open(json_path, "r") as f:
@@ -66,14 +63,10 @@ def check_file_relevance_from_json(
         min_dist = np.sqrt((vp_x - closest_x) ** 2 + (vp_y - closest_y) ** 2)
 
         is_relevant = min_dist <= search_radius
-        if is_relevant:
-            print(f"  - Min distance to file's bounding box: {min_dist:.2f} meters")
-            print("  - Verdict: RELEVANT (Reason: Distance is within search radius)")
 
         return is_relevant
 
     except Exception as e:
-        print(f"  - Verdict: RELEVANT (Reason: An error occurred - {e})")
         return True
 
 
@@ -98,7 +91,7 @@ def generate_skyline_mask_array(
     )
 
     # Smooth the skyline profile to reduce noise
-    filtered_elevations = medfilt(interpolated_elevations, kernel_size=5)
+    filtered_elevations = medfilt(interpolated_elevations, kernel_size=19)
 
     # Roll the array to align with a standard panorama projection (center is 0 degrees azimuth)
     pixels_to_roll = -int(output_width / 2)
