@@ -1,7 +1,11 @@
 import json
+import sys
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+project_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,8 +22,7 @@ SEARCH_RADIUS = (
     1000.0  # How far away to search for potential skyline points (in meters)
 )
 ANGLE_STEP = (
-    1
-    / constants.PANORAMA_IMG_WIDTH
+    (1 / constants.PANORAMA_IMG_WIDTH)
     * constants.LIDAR_SKYLINE_RESOLUTION  # 1 / 5120 * 64 seems to be sweetspot in that it runs quite fast and still gives quite good resolution
 )  # degrees - angular resolution of skyline, 5120 is the number of pixels in the panorama
 MIN_DISTANCE = 10.0  # meters - minimum distance to consider (avoid nearby clutter)

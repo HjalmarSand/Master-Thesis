@@ -877,7 +877,7 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
-def run_lidar_skyline_generation(batch_size: int = 5):
+def run_lidar_skyline_generation(batch_size: int = 2):
     """
     Stage 8: Generate a LiDAR skyline database and save the raw masks to a file.
     This version processes data in batches to prevent data loss on crash and allows
