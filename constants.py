@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from DEM.DEM_point_plot import SEARCH_RADIUS
+
 # --- Project Root Directory ---
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -27,6 +29,10 @@ OBSERVER_GRID_PATH = (
 
 PANORAMA_IMG_WIDTH = 5120
 PANORAMA_IMG_HEIGHT = 960
+
+SEARCH_RADIUS = 2000
+ANGLE_STEP = 1 / PANORAMA_IMG_WIDTH * LIDAR_SKYLINE_RESOLUTION
+MIN_DISTANCE = 10
 
 # Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280

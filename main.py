@@ -1,20 +1,35 @@
 import argparse
 import sys
 import time
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("TkAgg")
 import numpy as np
 import pandas as pd
-from sympy import false, true
+import torch
+from PIL import Image
+from torchvision import transforms
+from tqdm import tqdm
 
 import constants
-from DEM.DEM_skyline import create_and_save_grid, create_skyline_database
+from AI import evaluate_model, roll_angle_estimator
+from AI.roll_angle_estimator import RollEstimatorCNN
+from DEM.DEM_skyline import (
+    check_file_relevance_from_json,
+    create_and_save_grid,
+    find_laz_files,
+    generate_skyline_for_single_point,
+    generate_skyline_mask_array,
+    init_worker,
+    process_viewpoint_and_file,
+    visualize_comparison,
+    visualize_single_skyline,
+)
 from image_processing import split_stacked_images
-
-# from utils.use_polarmist_undistorter import main as fisheye_undistorter_main
 from image_processing.create_panoramas import build_panoramas
-
-# Use only one of these two, either polar mist undistortion from their estimated campera parameters our ours from the given csv from camera manifacturer
 from image_processing.fisheye_undistorter import FisheyeUndistorter
 from image_retrieval.colmap_naive_image_retrieval import (
     ColmapImageRetriever,
@@ -25,8 +40,6 @@ from skyline_processing import (
     fourier_skyline_encoder,
     skyline_matcher,
 )
-
-# from utils.skyline_segmenter import segment_skyline_from_panoramas, get_sam_predictor
 from skyline_processing.segformer_segmenter import SemanticSegmenter
 from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
@@ -134,9 +147,7 @@ def run_fisheye_segmentation():
 
         all_successful = True
         for dataset_dir in dataset_dirs:
-            print(
-                f"\n--- Segmenting fisheye images for dataset: {dataset_dir.name} ---"
-            )
+            print(f"\nSegmenting fisheye images for dataset: {dataset_dir.name}")
 
             for i in [1, 2]:
                 input_dir = dataset_dir / f"distorted_images_cam{i}"
@@ -174,6 +185,174 @@ def run_fisheye_segmentation():
         return False
 
 
+def run_roll_angle_training():
+    """
+    Stage 3: Train a CNN to estimate roll angle from segmented fisheye images.
+    """
+    print_stage_header(
+        3,
+        "ROLL ANGLE ESTIMATOR TRAINING",
+        "Training a CNN on annotated, segmented fisheye images.",
+    )
+
+    try:
+        project_root = Path(__file__).parent
+
+        # Define the paths for the training data and model output
+        annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
+        model_save_path = project_root / "AI" / "models" / "roll_estimator_v1.pth"
+
+        if not annotation_csv_path.is_file():
+            print(f"ERROR: Annotation file not found at '{annotation_csv_path}'")
+            return False
+
+        # Call the main training function from our new file
+        exit_code = roll_angle_estimator.train_roll_estimator(
+            images_root_dir=constants.IMAGES_DIR,
+            annotation_csv=annotation_csv_path,
+            model_save_path=model_save_path,
+            num_epochs=30,  # TODO: Experiment with this
+        )
+
+        return exit_code == 0
+
+    except Exception as e:
+        print(f"An error occurred during model training: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_roll_model_evaluation():
+    """
+    Stage 4: Evaluate the trained roll angle estimation model on the validation set.
+    """
+    print_stage_header(
+        4,
+        "ROLL ANGLE MODEL EVALUATION",
+        "Calculating error metrics and generating plots for the trained model.",
+    )
+
+    try:
+        project_root = Path(__file__).parent
+
+        # Define the paths for the data, trained model, and output plot
+        images_root_dir = project_root / "images"
+        annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
+        model_path = project_root / "AI" / "models" / "roll_estimator_v1.pth"
+        plot_save_path = (
+            project_root / "AI" / "evaluation_results" / "true_vs_predicted.png"
+        )
+
+        if not model_path.is_file():
+            print(f"ERROR: Trained model not found at '{model_path}'")
+            print("       Please run the training stage first.")
+            return False
+
+        # The transform must be identical to the one used during training
+        transform = transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5], std=[0.5]),
+            ]
+        )
+
+        exit_code = evaluate_model.run_evaluation(
+            images_root_dir=images_root_dir,
+            annotation_csv=annotation_csv_path,
+            model_path=model_path,
+            plot_save_path=plot_save_path,
+            transform=transform,
+        )
+
+        return exit_code == 0
+
+    except Exception as e:
+        print(f"An error occurred during model evaluation: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_interactive_roll_prediction():
+    """
+    Stage 5: Manually test the roll angle model on a single, hardcoded image path.
+    """
+    print_stage_header(
+        5,
+        "SINGLE IMAGE ROLL PREDICTION",
+        "Provide a path inside the function to get a roll angle prediction.",
+    )
+
+    try:
+        image_to_test_path = (
+            "images/dataset2/segmented_fisheye_cam1/binary_distorted_cam1_0447.png"
+        )
+
+        project_root = Path(__file__).parent
+        model_path = project_root / "AI" / "models" / "roll_estimator_v1.pth"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Check if the model exists
+        if not model_path.is_file():
+            print(f"ERROR: Trained model not found at '{model_path}'")
+            print("       Please run the training stage first.")
+            return False
+
+        # Check if the test image exists
+        image_path = Path(image_to_test_path)
+        if not image_path.is_file():
+            print(f"ERROR: Test image not found at '{image_path}'")
+            print(
+                "       Please update the 'image_to_test_path' variable in the script."
+            )
+            return False
+
+        # 1. Load the model structure and weights
+        model = RollEstimatorCNN()
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()  # Set to evaluation mode
+        print(f"Loaded trained model on {device}.")
+
+        # 2. Define the exact same transformations used during training
+        transform = transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5], std=[0.5]),
+            ]
+        )
+
+        print(f"Processing image: {image_path.name}")
+
+        # 3. Load and process the single image
+        with Image.open(image_path).convert("L") as img:
+            image_tensor = transform(img).unsqueeze(0).to(device)
+
+        # 4. Get the prediction
+        with torch.no_grad():
+            predicted_angle = model(image_tensor).item()
+
+        # 5. Display the result
+        print("\nPrediction Result")
+        print(f"Predicted Roll Angle: {predicted_angle:.2f} degrees")
+
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during prediction: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 # TODO: We should probably move stage 3 to here, and then make the undistortion stage 3 instead. The reason
 # is that right now we do not have any normalization accounting for the rocking of the boat. We could perhaps
 # use the projectory that we find between coordinates in the gps csv to predict the sway of the boat and account
@@ -193,12 +372,12 @@ def run_fisheye_segmentation():
 
 def run_fisheye_undistortion():
     """
-    Stage 2: Undistort fisheye images for all datasets.
+    Stage 6: Undistort fisheye images for all datasets.
     - Finds each dataset folder in the images directory.
     - Applies roll and horizon bend correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(
-        3,
+        6,
         "FISHEYE UNDISTORTION",
         "Applying camera-specific alignment parameters to a selected dataset.",
     )
@@ -236,12 +415,12 @@ def run_fisheye_undistortion():
                     break
                 else:
                     print(
-                        f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
+                        f"\nInvalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
                     )
             except ValueError:
-                print("\n❌ Invalid input. Please enter a number.")
+                print("\nInvalid input. Please enter a number.")
 
-        print(f"\n--- Processing dataset: {selected_dir.name} ---")
+        print(f"\nProcessing dataset: {selected_dir.name}")
 
         # Initialize the undistorter
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
@@ -312,10 +491,10 @@ def run_fisheye_undistortion():
 
 def run_gps_orientation_processing():
     """
-    Stage 3: Interactively select a dataset and process its GPS data to calculate orientation.
+    Stage 7: Interactively select a dataset and process its GPS data to calculate orientation.
     """
     print_stage_header(
-        4,
+        7,
         "GPS & ORIENTATION PROCESSING",
         "Calculates orientation from GPS data for a selected dataset.",
     )
@@ -352,12 +531,12 @@ def run_gps_orientation_processing():
                     break
                 else:
                     print(
-                        f"\n❌ Invalid input. Please enter a number between 0 and {len(available_datasets) - 1}."
+                        f"\nInvalid input. Please enter a number between 0 and {len(available_datasets) - 1}."
                     )
             except ValueError:
-                print("\n❌ Invalid input. Please enter a number.")
+                print("\nInvalid input. Please enter a number.")
 
-        print(f"\n--- Processing GPS data for: {selected_source_dir.name} ---")
+        print(f"\nProcessing GPS data for: {selected_source_dir.name}")
 
         input_csv_path = selected_source_dir / INPUT_CSV_NAME
         output_dir = Path(constants.IMAGES_DIR) / selected_source_dir.name
@@ -387,10 +566,10 @@ def run_gps_orientation_processing():
         return True
 
     except FileNotFoundError as e:
-        print(f"\n❌ ERROR: Could not find file: {e}")
+        print(f"\nERROR: Could not find file: {e}")
         return False
     except Exception as e:
-        print(f"\n❌ An error occurred during GPS orientation processing: {e}")
+        print(f"\nAn error occurred during GPS orientation processing: {e}")
         import traceback
 
         traceback.print_exc()
@@ -399,10 +578,10 @@ def run_gps_orientation_processing():
 
 def run_panorama_stitching():
     """
-    Stage 4: Interactively select a dataset and stitch its four rectilinear views into panoramas.
+    Stage 8: Interactively select a dataset and stitch its four rectilinear views into panoramas.
     """
     print_stage_header(
-        5,
+        8,
         "PANORAMA STITCHING",
         "Combining four views into a single panoramic image per timestamp for a selected dataset",
     )
@@ -444,7 +623,7 @@ def run_panorama_stitching():
             except ValueError:
                 print("\nInvalid input. Please enter a number.")
 
-        print(f"\n--- Stitching panoramas for dataset: {selected_dir.name} ---")
+        print(f"\nStitching panoramas for dataset: {selected_dir.name}")
 
         # Dynamically find the orientation CSV for the selected dataset
         orientation_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
@@ -460,7 +639,7 @@ def run_panorama_stitching():
         cam1_right_dir = selected_dir / "undistorted_cam1_right"
         cam2_left_dir = selected_dir / "undistorted_cam2_left"
         cam2_right_dir = selected_dir / "undistorted_cam2_right"
-        output_panorama_dir = selected_dir / "panoramas"
+        output_panorama_dir = selected_dir
 
         if selected_dir == "dataset1":
             manual_rotation_offset_deg = 16  # TODO: Verify with better calculations
@@ -477,7 +656,6 @@ def run_panorama_stitching():
             output_dir=output_panorama_dir,
             orientation_csv_path=orientation_csv_path,
             manual_rotation_offset_deg=manual_rotation_offset_deg,
-            use_edge_detection=False,
         )
 
         if exit_code == 0:
@@ -538,11 +716,11 @@ def run_panorama_stitching():
 # This method instead of SAM uses segformer-b5
 def run_skyline_segmentation():
     """
-    Stage 5: Interactively select a dataset and use segformer-b5 to create
+    Stage 9: Interactively select a dataset and use segformer-b5 to create
     binary skyline masks from its panoramas.
     """
     print_stage_header(
-        6,
+        9,
         "SKYLINE SEGMENTATION",
         "Generating binary sky masks using segformer-b5 for a selected dataset",
     )
@@ -578,14 +756,12 @@ def run_skyline_segmentation():
                     break  # Exit loop on valid choice
                 else:
                     print(
-                        f"\n❌ Invalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
+                        f"\nInvalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
                     )
             except ValueError:
-                print("\n❌ Invalid input. Please enter a number.")
+                print("\nInvalid input. Please enter a number.")
 
-        print(
-            f"\n--- Segmenting skylines for selected dataset: {selected_dir.name} ---"
-        )
+        print(f"\nSegmenting skylines for selected dataset: {selected_dir.name}")
 
         segmenter = SemanticSegmenter()
         if segmenter.model is None:
@@ -608,7 +784,7 @@ def run_skyline_segmentation():
             )
             return True
         else:
-            print(f"\n❌ Skyline segmentation failed for {selected_dir.name}!")
+            print(f"\nSkyline segmentation failed for {selected_dir.name}!")
             return False
 
     except Exception as e:
@@ -621,10 +797,10 @@ def run_skyline_segmentation():
 
 def build_colmap_databases(force_rebuild: bool = False):
     """
-    Stage 6: Build COLMAP databases for image retrieval for each dataset.
+    Stage 10: Build COLMAP databases for image retrieval for each dataset.
     """
     print_stage_header(
-        7, "BUILD COLMAP DATABASES", "Building feature databases for each dataset"
+        10, "BUILD COLMAP DATABASES", "Building feature databases for each dataset"
     )
 
     try:
@@ -642,9 +818,7 @@ def build_colmap_databases(force_rebuild: bool = False):
             return False
 
         for dataset_dir in dataset_dirs:
-            print(
-                f"\n--- Building COLMAP databases for dataset: {dataset_dir.name} ---"
-            )
+            print(f"\nBuilding COLMAP databases for dataset: {dataset_dir.name}")
 
             # NOTE: For undistorted images, we are using the 'left' views.
             configs = [
@@ -695,10 +869,10 @@ def build_colmap_databases(force_rebuild: bool = False):
 
 def analyze_retrieval_accuracy(sample_rate: int = 10):
     """
-    Stage 7: Analyze image retrieval accuracy for each dataset.
+    Stage 11: Analyze image retrieval accuracy for each dataset.
     """
     print_stage_header(
-        8, "RETRIEVAL ACCURACY ANALYSIS", "Analyzing location errors for each dataset"
+        11, "RETRIEVAL ACCURACY ANALYSIS", "Analyzing location errors for each dataset"
     )
 
     output_dir = Path("output")
@@ -776,8 +950,8 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
             ]
 
             for config in analysis_configs:
-                print(f"\n--- {config['name']} for {dataset_dir.name} ---")
-                results_output.append(f"\n--- {config['name']} ---")
+                print(f"\n{config['name']} for {dataset_dir.name}")
+                results_output.append(f"\n{config['name']}")
 
                 for cam_name, folder in [
                     ("cam1", config["cam1_folder"]),
@@ -873,122 +1047,226 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
         return False
 
 
+def run_single_point_validation():
+    """
+    Stage 12: Generate a DEM skyline for a single, user-selected coordinate
+    and compare it visually against the real segmented panorama.
+    """
+    print_stage_header(
+        12,
+        "SINGLE-POINT VALIDATION",
+        "Visually comparing a single DEM skyline against a real panorama.",
+    )
+    try:
+        # 1. Interactively select a dataset
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir()
+                and (d / "gps_interpolated_with_orientation.csv").is_file()
+            ]
+        )
+        if not dataset_dirs:
+            print("No datasets with 'gps_interpolated_with_orientation.csv' found.")
+            return False
+
+        selected_dir = dataset_dirs[0]
+        print(f"Using dataset: {selected_dir.name}")
+
+        # 2. Select a specific data point from the CSV
+        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        gps_df = pd.read_csv(gps_csv_path)
+
+        print("\nPlease select a data point to validate from the table below:")
+        print(gps_df.head(10).to_string())  # Show first 10 options
+        choice_str = input(f"Enter the index (0-{len(gps_df) - 1}): ")
+        choice_idx = int(choice_str)
+
+        selected_point = gps_df.iloc[choice_idx]
+        easting, northing = selected_point["easting"], selected_point["northing"]
+        original_filename = selected_point["filename"]  # e.g., '0801.jpg'
+        viewpoint_coords = (easting, northing, 1.5)  # Assume 1.5m height
+
+        # 3. Generate the DEM skyline for this single point
+        dem_mask = generate_skyline_for_single_point(viewpoint_coords)
+
+        # 4. Load the corresponding real segmented panorama
+        image_number = Path(original_filename).stem  # '0801'
+        real_mask_name = f"binary_panorama_{image_number}.png"
+        real_mask_path = selected_dir / "binary_panorama" / real_mask_name
+
+        real_mask = np.array(Image.open(real_mask_path))
+
+        # 5. Display the side-by-side comparison
+        point_id = f"{easting:.0f}_{northing:.0f}"
+        visualize_comparison(dem_mask, real_mask, point_id, real_mask_name)
+
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during single-point validation: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 # ! Warning: This method will take an enormous amount of time to run. If we want to have a finer grid than 25 meters, a good method now would be to shift the start and end point by 12,5 meters, and then run another 25 meter grid calculation.
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
-def run_lidar_skyline_generation(batch_size: int = 2):
-    """
-    Stage 8: Generate a LiDAR skyline database and save the raw masks to a file.
-    This version processes data in batches to prevent data loss on crash and allows
-    resuming from a previously saved state.
+# In main.py, replace the whole function
 
-    Args:
-        batch_size (int): The number of coordinates to process in each batch.
+
+def run_lidar_skyline_generation():
     """
-    print_stage_header(
-        9,
-        "LIDAR SKYLINE MASK GENERATION (BATCH-ENABLED)",
-        "Generates skyline masks from LAZ files and saves them as a NumPy database.",
-    )
+    Stage 13: Generate a LiDAR skyline database using a resilient, batch-based architecture.
+    """
+    print_stage_header(13, "LIDAR SKYLINE MASK GENERATION (BATCHED & RESILIENT)")
 
     try:
-        # --- Part 1: Define paths and initial setup ---
+        BATCH_SIZE = 100  # Process 100 viewpoints per batch
         project_root = Path(__file__).resolve().parent
         output_dir = project_root / "databases" / "dem_database"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "skyline_masks.npz"
 
-        # --- Part 2: Generate the total grid of observer points ---
-        print("\n--- Generating Observer Grid ---")
         grid_df = create_and_save_grid(
             start_coords=(611597.725, 6458055.924),
             end_coords=(614547.264, 6463806.450),
             spacing_meters=25.0,
         )
-        all_coords_tuples = list(zip(grid_df["easting"], grid_df["northing"]))
-        print(
-            f"Generated a grid with a total of {len(all_coords_tuples)} observer points."
+        # Create a lookup from point_id to coordinates
+        grid_df["point_id"] = grid_df.apply(
+            lambda row: f"dem_vp_{row['easting']:.0f}_{row['northing']:.0f}", axis=1
         )
+        coord_lookup = grid_df.set_index("point_id")[["easting", "northing"]].to_dict(
+            "index"
+        )
+        all_point_ids = grid_df["point_id"].tolist()
+        all_laz_files = find_laz_files()
 
-        # --- Part 3: Handle existing data and user choice (Resume or Overwrite) ---
-        full_database = {}
-        coords_to_process = all_coords_tuples
-
+        # 2. RESUME LOGIC
+        processed_ids = set()
         if output_path.exists():
-            print(f"\nDatabase file already exists at: {output_path}")
-            while True:
-                choice_str = input(
-                    "Choose an action: [0] Resume/Continue, [1] Overwrite/Start Fresh: "
-                )
-                try:
-                    choice_idx = int(choice_str)
-                    if choice_idx in [0, 1]:
-                        break
-                    else:
-                        print("Invalid input. Please enter 0 or 1.")
-                except ValueError:
-                    print("Invalid input. Please enter a number.")
+            with np.load(output_path) as existing_data:
+                processed_ids = set(existing_data.keys())
+            print(
+                f"Found existing database with {len(processed_ids)} processed points."
+            )
 
-            if choice_idx == 1:  # Overwrite
-                print("User chose to overwrite. Starting fresh.")
-                # No need to delete file, np.savez_compressed will overwrite it
-            else:  # Resume
-                print("Resuming from existing database...")
-                # Load the already processed data
-                loaded_data = np.load(output_path)
-                full_database = dict(loaded_data)
-
-                # Determine which coordinates are still missing
-                processed_keys = set(full_database.keys())
-                coords_to_process = [
-                    (e, n)
-                    for e, n in all_coords_tuples
-                    if f"{e}_{n}" not in processed_keys
-                ]
-                print(f"{len(processed_keys)} points already processed.")
-                print(f"{len(coords_to_process)} points remaining.")
-
-        if not coords_to_process:
-            print("\nAll coordinates have already been processed. Nothing to do.")
+        point_ids_to_process = [
+            pid for pid in all_point_ids if pid not in processed_ids
+        ]
+        if not point_ids_to_process:
+            print(
+                "\n✅ All points have already been processed. Database is up to date."
+            )
             return True
 
-        # --- Part 4: Process the coordinates in batches ---
-        num_remaining = len(coords_to_process)
-        total_batches = (
-            num_remaining + batch_size - 1
-        ) // batch_size  # Ceiling division
-
         print(
-            f"\n--- Starting skyline generation for {num_remaining} points in {total_batches} batches ---"
+            f"Total points to process: {len(point_ids_to_process)} / {len(all_point_ids)}"
         )
 
-        for i in range(0, num_remaining, batch_size):
-            batch_num = (i // batch_size) + 1
-            print(f"\n--- Processing Batch {batch_num} of {total_batches} ---")
+        # 3. BATCHING
+        batches = [
+            point_ids_to_process[i : i + BATCH_SIZE]
+            for i in range(0, len(point_ids_to_process), BATCH_SIZE)
+        ]
+        num_processes = max(1, cpu_count() - 10)
+        worker_config = {
+            "SEARCH_RADIUS": constants.SEARCH_RADIUS,
+            "ANGLE_STEP": constants.ANGLE_STEP,
+            "MIN_DISTANCE": constants.MIN_DISTANCE,
+        }
 
-            # Get the coordinates for the current batch
-            batch_coords = coords_to_process[i : i + batch_size]
+        # 4. MAIN BATCH PROCESSING LOOP
+        for i, batch_point_ids in enumerate(batches):
+            print_separator(f"Processing Batch {i + 1} / {len(batches)}")
 
-            # Generate the simulated skyline masks for this batch
-            # IMPORTANT: Assumes create_skyline_database returns a dict with string keys 'easting_northing'
-            batch_result = create_skyline_database(coords_list=batch_coords, base_z=1.5)
+            # A. Generate tasks just for this batch
+            batch_tasks = []
+            print("Preparing tasks for the current batch...")
+            for point_id in tqdm(batch_point_ids, desc="Pre-calculating tasks"):
+                coords = coord_lookup[point_id]
+                viewpoint_coords = (coords["easting"], coords["northing"], 1.5)
+                for laz_file in all_laz_files:
+                    if check_file_relevance_from_json(laz_file, viewpoint_coords):
+                        batch_tasks.append((point_id, viewpoint_coords, laz_file))
 
-            if not batch_result:
-                print(f"Warning: Batch {batch_num} returned no results. Continuing...")
+            if not batch_tasks:
+                print("No relevant tasks for this batch. Skipping.")
                 continue
 
-            # Update the main database in memory with the results from the batch
-            full_database.update(batch_result)
+            # B. Run workers for the batch
+            print(
+                f"Distributing {len(batch_tasks)} tasks across {num_processes} CPU cores..."
+            )
+            partial_results = []
+            with Pool(
+                processes=num_processes,
+                initializer=init_worker,
+                initargs=(worker_config,),
+            ) as pool:
+                iterator = pool.imap_unordered(process_viewpoint_and_file, batch_tasks)
+                for result in tqdm(
+                    iterator, total=len(batch_tasks), desc="Processing LAZ files"
+                ):
+                    if result and result[1] is not None:
+                        partial_results.append(result)
 
-            # Save the *entire updated database* to disk. This is the crucial step.
-            print(f"  -> Saving {len(full_database)} total items to {output_path}...")
-            np.savez_compressed(output_path, **full_database)
-            print(f"  -> Batch {batch_num} complete and progress saved.")
+            # C. Aggregate and generate masks for the batch
+            batch_skyline_data = {}
+            for point_id, (azimuths, elevations) in partial_results:
+                if point_id not in batch_skyline_data:
+                    num_bins = int(360 / constants.ANGLE_STEP)
+                    batch_skyline_data[point_id] = np.full(num_bins, 0.0)
 
-        print(
-            f"\nLiDAR skyline mask generation complete. All {len(full_database)} masks saved to '{output_path}'."
-        )
+                df = pd.DataFrame({"azimuth": azimuths, "elevation": elevations})
+                num_bins = len(batch_skyline_data[point_id])
+                angle_labels = np.arange(num_bins)
+                angle_bin_edges = np.linspace(0, 360, num_bins + 1)
+                df["bin"] = pd.cut(
+                    df["azimuth"],
+                    bins=angle_bin_edges,
+                    labels=angle_labels,
+                    right=False,
+                    include_lowest=True,
+                )
+                max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
+                new_maxes = np.full(num_bins, 0.0)
+                new_maxes[max_in_bin.index] = max_in_bin.values
+                batch_skyline_data[point_id] = np.maximum(
+                    batch_skyline_data[point_id], new_maxes
+                )
+
+            batch_final_masks = {}
+            for point_id, elevations in batch_skyline_data.items():
+                num_bins = len(elevations)
+                angles = np.linspace(0, 360, num_bins, endpoint=False)
+                batch_final_masks[point_id] = generate_skyline_mask_array(
+                    angles,
+                    elevations,
+                    constants.PANORAMA_IMG_WIDTH,
+                    constants.PANORAMA_IMG_HEIGHT,
+                )
+
+            # D. Incremental Save
+            print(
+                f"Saving results for {len(batch_final_masks)} points from this batch..."
+            )
+            # Load existing data, update it, and save back
+            existing_data = {}
+            if output_path.exists():
+                existing_data = dict(np.load(output_path))
+
+            existing_data.update(batch_final_masks)
+            np.savez_compressed(output_path, **existing_data)
+            print(f"Database now contains {len(existing_data)} total masks.")
+
+        print(f"\n✅ LiDAR skyline mask generation complete. Saved to '{output_path}'.")
         return True
 
     except Exception as e:
@@ -1002,10 +1280,10 @@ def run_lidar_skyline_generation(batch_size: int = 2):
 # TODO: Maybe one thing we want to do, since the panoramas we have lose some information in the borders where the two camera images connect, perhaps before rotating the panoramas in north normalized direction, just like the dems are, we keep track of how much they need to be rotated, and then where the edges between the front and back facing images are, and cut out a couple of percent HFOV from the DEM simulated image there as well. This is because the DEM image has perfect 360deg coverage while our panoramas has maybe 2x175deg or something similar in practice, even though it should be 2x180deg.
 def run_dem_skyline_encoding():
     """
-    Stage 9: Load a DEM skyline mask database and create all fingerprint types.
+    Stage 14: Load a DEM skyline mask database and create all fingerprint types.
     """
     print_stage_header(
-        10,
+        14,
         "DEM SKYLINE ENCODING",
         "Generates all fingerprint types from a pre-computed DEM mask database.",
     )
@@ -1056,7 +1334,7 @@ def run_dem_skyline_encoding():
         return True
 
     except Exception as e:
-        print(f"❌ An error occurred during DEM encoding: {e}")
+        print(f"An error occurred during DEM encoding: {e}")
         import traceback
 
         traceback.print_exc()
@@ -1065,11 +1343,11 @@ def run_dem_skyline_encoding():
 
 def run_skyline_fourier_encoder():
     """
-    Stage 10: Select a dataset and create fingerprint databases in the project root
+    Stage 15: Select a dataset and create fingerprint databases in the project root
     under a new per-dataset directory structure.
     """
     print_stage_header(
-        11,
+        15,
         "SKYLINE FINGERPRINTING",
         "Generating 'global' and 'windowed' fingerprint databases.",
     )
@@ -1106,7 +1384,7 @@ def run_skyline_fourier_encoder():
             except ValueError:
                 print("\n Invalid input. Please enter a number.")
 
-        print(f"\n--- Fingerprinting skylines for dataset: {selected_dir.name} ---")
+        print(f"\nFingerprinting skylines for dataset: {selected_dir.name}")
 
         input_binary_dir = selected_dir / "binary_panorama"
         dataset_name = selected_dir.name
@@ -1154,11 +1432,11 @@ def run_skyline_fourier_encoder():
 
 def run_matching_analysis():
     """
-    Stage 11: Perform a self-matching analysis on a fingerprint database,
+    Stage 16: Perform a self-matching analysis on a fingerprint database,
     showing detailed per-window scores for windowed strategies.
     """
     print_stage_header(
-        12,
+        16,
         "FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other to test fingerprint quality.",
     )
@@ -1205,7 +1483,7 @@ def run_matching_analysis():
         )
 
         if results:
-            print("\n--- Top 5 Self-Matching Results ---")
+            print("\nTop 5 Self-Matching Results")
             for result in results:
                 print(f"\n  Query: {result['query']}")
                 if result["top_matches"]:
@@ -1233,10 +1511,10 @@ def run_matching_analysis():
 
 def run_cnn_encoding():
     """
-    Stage 12: Select a dataset and create CNN-based fingerprints for its binary panoramas.
+    Stage 17: Select a dataset and create CNN-based fingerprints for its binary panoramas.
     """
     print_stage_header(
-        13,
+        17,
         "CNN SKYLINE ENCODING",
         "Generating rich feature vectors using a pre-trained CNN.",
     )
@@ -1273,7 +1551,7 @@ def run_cnn_encoding():
             except ValueError:
                 print("\nInvalid input. Please enter a number.")
 
-        print(f"\n--- Encoding skylines for dataset: {selected_dir.name} ---")
+        print(f"\nEncoding skylines for dataset: {selected_dir.name}")
 
         input_binary_dir = selected_dir / "binary_panorama"
         dataset_name = selected_dir.name
@@ -1299,11 +1577,11 @@ def run_cnn_encoding():
 
 def run_cnn_matching_analysis():
     """
-    Stage 13: Perform a self-matching analysis on a CNN-based fingerprint
+    Stage 18: Perform a self-matching analysis on a CNN-based fingerprint
     database to validate the encoding method.
     """
     print_stage_header(
-        14,
+        18,
         "CNN FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other using CNN features.",
     )
@@ -1369,6 +1647,97 @@ def run_cnn_matching_analysis():
         return False
 
 
+def run_dem_visualization():
+    """
+    Stage 19: Visualize a few sample DEM skylines using coordinates from a dataset's GPS file.
+    """
+    print_stage_header(
+        19,
+        "VISUALIZE DEM SKYLINE MASKS",
+        "Displaying sample masks generated from LiDAR data.",
+    )
+    try:
+        # 1. Check for the DEM database
+        project_root = Path(__file__).resolve().parent
+        dem_db_path = project_root / "databases" / "dem_database" / "skyline_masks.npz"
+        if not dem_db_path.exists():
+            print(f"DEM database not found at '{dem_db_path}'.")
+            print("   Please run Stage 12 (LIDAR SKYLINE MASK GENERATION) first.")
+            return False
+
+        # 2. Interactively select a dataset to get coordinates from
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir()
+                and (d / "gps_interpolated_with_orientation.csv").is_file()
+            ]
+        )
+        if not dataset_dirs:
+            print("No datasets with 'gps_interpolated_with_orientation.csv' found.")
+            return False
+
+        selected_dir = None
+        while True:
+            print(
+                "\nPlease select a dataset to pull GPS coordinates from for visualization:"
+            )
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print("Invalid choice.")
+            except ValueError:
+                print("Please enter a number.")
+
+        # 3. Load CSV and find closest points in the DEM database
+        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        print(f"\nLoading coordinates from {gps_csv_path.name}...")
+        gps_df = pd.read_csv(gps_csv_path)
+
+        # Take up to 3 random sample points from the CSV
+        num_samples = min(3, len(gps_df))
+        sample_points = gps_df.sample(n=num_samples)
+        print(f"\nAttempting to visualize {num_samples} points from the trajectory.")
+        print(
+            "Note: Finding the NEAREST grid point in the DEM database for each sample."
+        )
+
+        with np.load(dem_db_path) as data:
+            db_keys = data.files
+            # Parse 'dem_vp_easting_northing' keys into a numpy array of coordinates
+            db_coords = np.array(
+                [[int(k.split("_")[2]), int(k.split("_")[3])] for k in db_keys]
+            )
+
+            for _, row in sample_points.iterrows():
+                query_coord = np.array([row["easting"], row["northing"]])
+                # Find the index of the closest coordinate in the database
+                distances = np.sum((db_coords - query_coord) ** 2, axis=1)
+                closest_idx = np.argmin(distances)
+                closest_point_id = db_keys[closest_idx]
+
+                # Call the visualization function
+                visualize_single_skyline(dem_db_path, closest_point_id)
+
+        print("\nDEM Visualization complete.")
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during DEM visualization: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 def main():
     """Main pipeline execution"""
     parser = argparse.ArgumentParser(description="Fisheye image processing pipeline")
@@ -1403,24 +1772,29 @@ def main():
     stages = {
         1: ("Split Images", run_image_splitting),
         2: ("Segment Fisheye For Roll Network", run_fisheye_segmentation),
-        3: ("Undistort Fisheye", run_fisheye_undistortion),
-        4: ("Process GPS/Orientation", run_gps_orientation_processing),
-        5: ("Stitch Panoramas", run_panorama_stitching),
-        6: ("Segment Skylines", run_skyline_segmentation),
-        7: (
+        3: ("Train Roll Angle Estimator", run_roll_angle_training),
+        4: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
+        5: ("Interactive Roll Prediction", run_interactive_roll_prediction),
+        6: ("Undistort Fisheye", run_fisheye_undistortion),
+        7: ("Process GPS/Orientation", run_gps_orientation_processing),
+        8: ("Stitch Panoramas", run_panorama_stitching),
+        9: ("Segment Skylines", run_skyline_segmentation),
+        10: (
             "Build COLMAP Databases",
             lambda: build_colmap_databases(args.rebuild_colmap),
         ),
-        8: (
+        11: (
             "Analyze Retrieval Accuracy",
             lambda: analyze_retrieval_accuracy(args.sample_rate),
         ),
-        9: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
-        10: ("Encode DEM Skylines", run_dem_skyline_encoding),
-        11: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
-        12: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
-        13: ("Fourier Matching Analysis", run_matching_analysis),
-        14: ("CNN Matching Analysis", run_cnn_matching_analysis),
+        12: ("Single Point Validation", run_single_point_validation),
+        13: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
+        14: ("Encode DEM Skylines", run_dem_skyline_encoding),
+        15: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
+        16: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
+        17: ("Fourier Matching Analysis", run_matching_analysis),
+        18: ("CNN Matching Analysis", run_cnn_matching_analysis),
+        19: ("Visualize DEM Skylines", run_dem_visualization),
     }
 
     # Determine which stages to run

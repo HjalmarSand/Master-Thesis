@@ -5,140 +5,205 @@ import numpy as np
 
 # --- TUNING PARAMETERS ---
 # Canny Edge Detector thresholds
-CANNY_THRESHOLD_1 = 25
-CANNY_THRESHOLD_2 = 65
+CANNY_THRESHOLD_1 = 50
+CANNY_THRESHOLD_2 = 150
 
 # Gaussian Blur kernel size (must be an odd number)
 BLUR_KERNEL_SIZE = (5, 5)
 
 # Hough Line Transform parameters
-HOUGH_THRESHOLD = 50
-HOUGH_MIN_LINE_LENGTH = 40
-HOUGH_MAX_LINE_GAP = 5
+HOUGH_THRESHOLD = 50  # Minimum number of votes to consider a line
+HOUGH_MIN_LINE_LENGTH = 50  # Minimum length of a line
+HOUGH_MAX_LINE_GAP = 10  # Maximum allowed gap between points on the same line
 
-# --- NEW: Region of Interest (ROI) Parameter ---
-# Percentage of the image height to ignore from the bottom.
-# A value of 0.3 means the bottom 30% of the image will be masked out.
-# TUNE THIS VALUE based on where the wake typically appears in your images.
-ROI_BOTTOM_IGNORE_PERCENT = 0.35  # Ignore bottom 35%
+# --- Region of Interest (ROI) Parameters ---
+# We create a trapezoid, ignoring the top and bottom portions of the image.
+# This helps to exclude clouds at the top and boat wakes/foreground at the bottom.
+# Values are percentages of the total image height.
+ROI_TOP_IGNORE_PERCENT = 0.33  # Ignore top 33% of the image (sky/clouds)
+ROI_BOTTOM_IGNORE_PERCENT = 0.4  # Ignore bottom 25% of the image (boat/wake)
+
+# --- Horizon Line Filtering ---
+# Angle range (in degrees) to consider a line as a potential horizon candidate.
+# A narrow range like [-15, 15] is good for rejecting non-horizon lines.
+HORIZON_ANGLE_RANGE = (-15.0, 15.0)
 
 
-def process_single_image_with_roi(image_path):
+def calculate_weighted_horizon_angle(lines):
     """
-    Loads a single image and finds the horizon, ignoring the bottom part of the
-    image to avoid detecting the boat's wake.
+    Calculates a single, robust roll angle from a list of detected lines.
+    It does this by computing a weighted average of the angles, where the
+    weight of each line is its length.
+
+    Args:
+        lines: A list of lines detected by HoughLinesP.
+
+    Returns:
+        The final calculated roll angle in degrees, or 0.0 if no valid lines are found.
     """
-    original_image = cv2.imread(image_path)
+    if lines is None:
+        return 0.0
+
+    candidate_lines = []
+    for line_segment in lines:
+        x1, y1, x2, y2 = line_segment[0]
+        # Calculate angle and length
+        angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+        length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+
+        # Filter lines to be within the specified angle range (near horizontal)
+        if HORIZON_ANGLE_RANGE[0] < angle < HORIZON_ANGLE_RANGE[1]:
+            candidate_lines.append({"angle": angle, "length": length})
+
+    if not candidate_lines:
+        print("Warning: No candidate horizon lines found.")
+        return 0.0
+
+    # Calculate the weighted average of the angles
+    weighted_angle_sum = sum(line["angle"] * line["length"] for line in candidate_lines)
+    total_length = sum(line["length"] for line in candidate_lines)
+
+    return weighted_angle_sum / total_length
+
+
+def rotate_and_resize(image, angle_degrees):
+    """
+    Rotates an image by a given angle and resizes the canvas to fit the
+    entire rotated image without cropping the corners.
+
+    Args:
+        image: The original image to rotate.
+        angle_degrees: The angle to rotate the image by, in degrees.
+
+    Returns:
+        The rotated image.
+    """
+    h, w = image.shape[:2]
+    center = (w // 2, h // 2)
+
+    # Get the rotation matrix
+    M = cv2.getRotationMatrix2D(center, angle_degrees, 1.0)
+
+    # Calculate the new bounding box size
+    cos = np.abs(M[0, 0])
+    sin = np.abs(M[0, 1])
+    new_w = int((h * sin) + (w * cos))
+    new_h = int((h * cos) + (w * sin))
+
+    # Adjust the rotation matrix to account for translation
+    M[0, 2] += (new_w / 2) - center[0]
+    M[1, 2] += (new_h / 2) - center[1]
+
+    # Perform the actual rotation and return the image
+    return cv2.warpAffine(
+        image, M, (new_w, new_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+    )
+
+
+def process_and_correct_image(image_path1, image_path2):
+    """
+    Main pipeline: Loads an image, detects the horizon, and corrects the roll.
+    """
+    original_image1 = cv2.imread(image_path1)
+    original_image2 = cv2.imread(image_path2)
+
+    original_image = cv2.hconcat([original_image2, original_image1])
     if original_image is None:
-        print(f"Error: Could not load image at {image_path}")
+        print(f"Error: Could not load image at {image_path1} or {image_path2}")
         return
 
-    # Get image dimensions
-    (h, w) = original_image.shape[:2]
-
-    # 1. Pre-processing
+    # --- 1. PRE-PROCESSING ---
     gray_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
     blurred_image = cv2.GaussianBlur(gray_image, BLUR_KERNEL_SIZE, 0)
 
-    # 2. Canny Edge Detection (on the full blurred image)
+    # --- 2. CANNY EDGE DETECTION ---
     edges = cv2.Canny(blurred_image, CANNY_THRESHOLD_1, CANNY_THRESHOLD_2)
 
-    # --- 3. NEW: Create and Apply the ROI Mask ---
-    # Create a blank mask with the same dimensions as the edge map
+    # --- 3. CREATE AND APPLY REGION OF INTEREST (ROI) MASK ---
+    h, w = edges.shape
     mask = np.zeros_like(edges)
 
-    # Define the ROI polygon. We want a rectangle covering the top part of the image.
-    # The bottom boundary of the ROI is the key parameter.
-    roi_top_y = 0  # Start from the top
+    # Define the vertices of the trapezoidal ROI
+    roi_top_y = int(h * ROI_TOP_IGNORE_PERCENT)
     roi_bottom_y = int(h * (1 - ROI_BOTTOM_IGNORE_PERCENT))
-
-    # We define a rectangle covering the top part of the image we want to keep
     roi_corners = np.array(
         [[(0, roi_top_y), (w, roi_top_y), (w, roi_bottom_y), (0, roi_bottom_y)]],
         dtype=np.int32,
     )
 
-    # Fill the ROI polygon with white (255)
+    # Fill the ROI polygon with white
     cv2.fillPoly(mask, roi_corners, 255)
-
-    # Apply the mask to the edge map using a bitwise AND operation.
-    # This keeps only the edge pixels that are within the white area of the mask.
     masked_edges = cv2.bitwise_and(edges, mask)
 
-    # 4. Hough Line Transform (run on the MASKED edge map)
+    # --- 4. HOUGH LINE TRANSFORM on the masked edges ---
     lines = cv2.HoughLinesP(
-        masked_edges,  # Use the masked edges, not the original ones!
-        1,
-        np.pi / 180,
+        masked_edges,
+        1,  # rho resolution (1 pixel)
+        np.pi / 180,  # theta resolution (1 degree)
         threshold=HOUGH_THRESHOLD,
         minLineLength=HOUGH_MIN_LINE_LENGTH,
         maxLineGap=HOUGH_MAX_LINE_GAP,
     )
 
-    debug_image = original_image.copy()
+    # --- 5. CALCULATE THE FINAL HORIZON ANGLE ---
+    roll_angle = calculate_weighted_horizon_angle(lines)
+    print(f"Horizon detected! Estimated Roll Angle: {roll_angle:.2f} degrees")
 
-    # Draw the ROI boundary on the debug image for visualization
-    cv2.rectangle(
-        debug_image, (0, roi_top_y), (w, roi_bottom_y), (0, 0, 255), 2
-    )  # Red rectangle
+    # --- 6. CORRECT THE IMAGE ---
+    # The correction angle is the negative of the detected roll angle
+    corrected_image = rotate_and_resize(original_image, -roll_angle)
+
+    # --- 7. VISUALIZATION (for debugging) ---
+    debug_image = original_image.copy()
+    # Draw the ROI
+    cv2.polylines(
+        debug_image, [roi_corners], isClosed=True, color=(0, 0, 255), thickness=2
+    )
+    # Draw all detected lines (within the ROI) in blue
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(debug_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+    # Draw the final calculated horizon line in green
+    center_y = h // 2
+    length = w
+    angle_rad = math.radians(roll_angle)
+    x1 = int((w / 2) - (length / 2) * math.cos(angle_rad))
+    y1 = int(center_y - (length / 2) * math.sin(angle_rad))
+    x2 = int((w / 2) + (length / 2) * math.cos(angle_rad))
+    y2 = int(center_y + (length / 2) * math.sin(angle_rad))
+    cv2.line(debug_image, (x1, y1), (x2, y2), (0, 255, 0), 3, cv2.LINE_AA)
+
     cv2.putText(
         debug_image,
-        "Search Area (ROI)",
-        (10, roi_bottom_y - 10),
+        f"Angle: {roll_angle:.2f} deg",
+        (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (0, 0, 255),
+        1,
+        (0, 255, 0),
         2,
     )
 
-    # 5. Filter for the Horizon and Calculate Angle (same logic as before)
-    roll_angle = 0.0  # Default to 0 if no line is found
-    if lines is not None:
-        candidate_lines = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-            if -30.0 < angle < 30.0:
-                length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-                candidate_lines.append(
-                    {"line": line[0], "angle": angle, "length": length}
-                )
-                cv2.line(
-                    debug_image, (x1, y1), (x2, y2), (255, 0, 0), 2
-                )  # Blue candidates
-
-        if candidate_lines:
-            best_line_info = max(candidate_lines, key=lambda x: x["length"])
-            roll_angle = best_line_info["angle"]
-            bx1, by1, bx2, by2 = best_line_info["line"]
-            cv2.line(
-                debug_image, (bx1, by1), (bx2, by2), (0, 255, 0), 3
-            )  # Green best line
-            print(f"Horizon detected! Estimated Roll Angle: {roll_angle:.2f} degrees")
-    else:
-        print("Warning: No candidate lines found in the ROI.")
-
-    # 6. Correct the image
-    center = (w // 2, h // 2)
-    correction_angle = -roll_angle
-    M = cv2.getRotationMatrix2D(center, correction_angle, 1.0)
-    corrected_image = cv2.warpAffine(
-        original_image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT
-    )
-
-    # Display the results
+    # Display results
     cv2.imshow("Original Image", original_image)
-    cv2.imshow("Masked Edges (Wake Removed)", masked_edges)
-    cv2.imshow("Horizon Detection (Debug View)", debug_image)
+    cv2.imshow("Masked Edges within ROI", masked_edges)
+    cv2.imshow("Horizon Detection (Debug)", debug_image)
     cv2.imshow("Corrected Image", corrected_image)
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
 
-# --- Main Execution ---
+# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    # Choose an image where the wake is causing problems
-    TEST_IMAGE_PATH = "images/dataset3/distorted_images_cam1/distorted_cam1_2508.jpg"  # Replace with a real path
+    # Replace this with the path to your image
+    # Use an image of an ocean with islands on the horizon for best results.
+    TEST_IMAGE_PATH1 = (
+        "images/dataset1/undistorted_cam1_right/undistorted_cam1_0801_right.jpg"
+    )
+    TEST_IMAGE_PATH2 = (
+        "images/dataset1/undistorted_cam1_left/undistorted_cam1_0801_left.jpg"
+    )
 
-    process_single_image_with_roi(TEST_IMAGE_PATH)
+    process_and_correct_image(TEST_IMAGE_PATH1, image_path2=TEST_IMAGE_PATH2)
