@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pdal
+from scipy import ndimage
 from scipy.signal import medfilt
 from tqdm import tqdm
 
@@ -316,24 +317,65 @@ def generate_skyline_for_single_point(
     return final_mask
 
 
+def calculate_skyline_similarity(dem_mask: np.ndarray, real_mask: np.ndarray) -> float:
+    """
+    Calculates the Intersection over Union (IoU) score between two skyline masks.
+    """
+    # Convert masks to boolean (True for sky, False for terrain)
+    dem_sky = dem_mask > 0
+    real_sky = real_mask > 0
+
+    intersection = np.sum(np.logical_and(dem_sky, real_sky))
+    union = np.sum(np.logical_or(dem_sky, real_sky))
+
+    return intersection / union if union > 0 else 0.0
+
+
 def visualize_comparison(
-    dem_mask: np.ndarray, real_mask: np.ndarray, point_id: str, real_image_name: str
+    dem_mask: np.ndarray,
+    real_mask: np.ndarray,
+    point_id: str,
+    real_image_name: str,
+    similarity_score: float,
 ):
     """
-    Saves a side-by-side comparison of the generated DEM mask and the real segmented mask to a file.
+    Saves a side-by-side comparison with an overlay plot and similarity score.
     """
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8))
-    fig.suptitle(f"Skyline Comparison for Viewpoint: {point_id}", fontsize=16)
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3, 1, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 1, 1]}
+    )
+    fig.suptitle(
+        f"Skyline Comparison for Viewpoint: {point_id}\nSimilarity (IoU Score): {similarity_score:.2%}",
+        fontsize=16,
+    )
 
+    # Plot 1: Generated DEM Skyline
     ax1.imshow(dem_mask, cmap="gray", aspect="auto")
     ax1.set_title("Generated DEM Skyline")
     ax1.set_ylabel("Elevation")
     ax1.set_xticks([])
 
+    # Plot 2: Real Segmented Panorama
     ax2.imshow(real_mask, cmap="gray", aspect="auto")
     ax2.set_title(f"Real Segmented Panorama ({real_image_name})")
-    ax2.set_xlabel("Azimuth")
     ax2.set_ylabel("Elevation")
+    ax2.set_xticks([])
+
+    # Plot 3: Overlay
+    # Create an empty RGB image for the overlay
+    h, w = dem_mask.shape
+    overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    # Find the edges of the skylines
+    dem_edge = ndimage.sobel(dem_mask, axis=0) > 0
+    real_edge = ndimage.sobel(real_mask, axis=0) > 0
+    # Color the edges: DEM=Red, Real=Green. Where they overlap, it becomes Yellow.
+    overlay[dem_edge, 0] = 255  # Red channel
+    overlay[real_edge, 1] = 255  # Green channel
+
+    ax3.imshow(overlay, aspect="auto")
+    ax3.set_title("Overlay (DEM = Red, Real = Green, Overlap = Yellow)")
+    ax3.set_xlabel("Azimuth")
+    ax3.set_ylabel("Elevation")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
@@ -344,5 +386,67 @@ def visualize_comparison(
     plt.savefig(save_path)
     plt.close(fig)
 
-    # Telling the user where to find the image
-    print(f"Comparison plot saved to: {save_path}")
+    print(f"✅ Comparison plot saved to: {save_path}")
+
+
+def process_tile_for_multiple_viewpoints(task: Tuple) -> List[Tuple]:
+    """
+    A tile-centric worker. It loads one LAZ file and processes all relevant
+    viewpoints against it.
+    """
+    laz_file_path, viewpoints = task
+
+    # 1. Load the entire LAZ file into memory ONCE
+    try:
+        pipeline = pdal.Reader.las(filename=str(laz_file_path)).pipeline()
+        pipeline.execute()
+        points = pipeline.arrays[0]
+        if len(points) == 0:
+            return []
+    except Exception as e:
+        print(f"Warning: Failed to load {laz_file_path.name}: {e}")
+        return []
+
+    # 2. Process each viewpoint against the in-memory point cloud
+    results = []
+    num_bins = int(360 / constants.ANGLE_STEP)
+    min_distance = constants.MIN_DISTANCE
+
+    for point_id, viewpoint_coords in viewpoints:
+        vp_x, vp_y, vp_z = viewpoint_coords
+
+        # Calculate relative coordinates
+        rel_x, rel_y, rel_z = points["X"] - vp_x, points["Y"] - vp_y, points["Z"] - vp_z
+        horizontal_dist = np.sqrt(rel_x**2 + rel_y**2)
+        valid_mask = horizontal_dist > min_distance
+
+        if not np.any(valid_mask):
+            continue
+
+        # Calculate azimuth and elevation
+        azimuth_deg = (
+            np.degrees(np.arctan2(rel_x[valid_mask], rel_y[valid_mask])) + 360
+        ) % 360
+        elevation_deg = np.degrees(
+            np.arctan2(rel_z[valid_mask], horizontal_dist[valid_mask])
+        )
+
+        # Aggregate results for this viewpoint
+        df = pd.DataFrame({"azimuth": azimuth_deg, "elevation": elevation_deg})
+        angle_labels = np.arange(num_bins)
+        angle_bin_edges = np.linspace(0, 360, num_bins + 1)
+        df["bin"] = pd.cut(
+            df["azimuth"],
+            bins=angle_bin_edges,
+            labels=angle_labels,
+            right=False,
+            include_lowest=True,
+        )
+        max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
+
+        skyline = np.full(num_bins, 0.0)  # Use 0.0 as default for flat horizon
+        skyline[max_in_bin.index] = max_in_bin.values
+
+        results.append((point_id, skyline))
+
+    return results

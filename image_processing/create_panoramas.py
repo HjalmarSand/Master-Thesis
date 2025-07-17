@@ -233,7 +233,7 @@ def build_panoramas(
     output_dir,
     orientation_csv_path=None,
     apply_rotation=True,
-    manual_rotation_offset_deg=16.0,
+    manual_rotation_offset_deg=31.0,  # + 5 more for dataset 2 and 3
     use_edge_detection=False,
 ):  # With our undistortion there seems to be about a 16 degree offset between the boats and the cameras orientation
     """
@@ -286,7 +286,7 @@ def build_panoramas(
 
     if manual_rotation_offset_deg != 0.0:
         print(
-            f"Applying a constant manual rotation offset of {manual_rotation_offset_deg}° to all panoramas."
+            f"Applying a constant manual rotation offset of {manual_rotation_offset_deg} to all panoramas."
         )
 
     # Use cam1_left_dir as the reference to find all numbers in the image names as identifier
