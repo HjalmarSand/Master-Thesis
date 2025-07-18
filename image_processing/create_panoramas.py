@@ -220,7 +220,7 @@ def build_panoramas(
     output_dir,
     orientation_csv_path=None,
     apply_rotation=True,
-    manual_rotation_offset_deg=16.0,gi
+    manual_rotation_offset_deg=16.0,
 ):
     """
     Finds corresponding sets of four images, stitches them into intermediate
