@@ -267,7 +267,12 @@ def build_panoramas(
             print(f"Warning: Could not load orientation CSV: {e}. Skipping rotation.")
             apply_rotation = False
 
-    # Use cam2_left_dir as the reference to find all numbers in the image names
+    if manual_rotation_offset_deg != 0.0:
+        print(
+            f"Applying a constant manual rotation offset of {manual_rotation_offset_deg} to all panoramas."
+        )
+
+    # Use cam1_left_dir as the reference to find all numbers in the image names as identifier
     base_images = list(Path(cam2_left_dir).glob("*.jpg"))
     if not base_images:
         print(f"Error: No images found in the base directory: {cam1_left_dir}")

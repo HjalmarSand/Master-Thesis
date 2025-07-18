@@ -96,7 +96,7 @@ def generate_skyline_mask_array(
     )
 
     # Smooth the skyline profile to reduce noise
-    filtered_elevations = medfilt(interpolated_elevations, kernel_size=19)
+    filtered_elevations = medfilt(interpolated_elevations, kernel_size=29)
 
     # Roll the array to align with a standard panorama projection (center is 0 degrees azimuth)
     pixels_to_roll = -int(output_width / 2)
@@ -336,61 +336,46 @@ def calculate_skyline_similarity(dem_mask: np.ndarray, real_mask: np.ndarray) ->
 
 
 def visualize_comparison(
+    original_real_mask: np.ndarray,
     dem_mask: np.ndarray,
-    real_mask: np.ndarray,
+    aligned_real_mask: np.ndarray,
     point_id: str,
     real_image_name: str,
     similarity_score: float,
+    yaw_offset: float,
+    save_path: Path,
 ):
     """
-    Saves a side-by-side comparison with an overlay plot and similarity score.
+    Saves a 3-panel plot comparing the original, DEM, and aligned real skylines.
     """
-    fig, (ax1, ax2, ax3) = plt.subplots(
-        3, 1, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 1, 1]}
+    fig, axs = plt.subplots(3, 1, figsize=(15, 9))
+    title = (
+        f"Comparison for Query '{real_image_name}' (Point: {point_id})\n"
+        f"Calculated Yaw Offset: {yaw_offset:.2f}° | "
+        f"Post-Alignment IoU Score: {similarity_score:.2%}"
     )
-    fig.suptitle(
-        f"Skyline Comparison for Viewpoint: {point_id}\nSimilarity (IoU Score): {similarity_score:.2%}",
-        fontsize=16,
-    )
+    fig.suptitle(title, fontsize=14)
 
-    # Plot 1: Generated DEM Skyline
-    ax1.imshow(dem_mask, cmap="gray", aspect="auto")
-    ax1.set_title("Generated DEM Skyline")
-    ax1.set_ylabel("Elevation")
-    ax1.set_xticks([])
+    # Plot 1: Original Real Panorama
+    axs[0].imshow(original_real_mask, cmap="gray", aspect="auto")
+    axs[0].set_title("1. Original Real Panorama (Unaligned)")
+    axs[0].set_ylabel("Elevation")
 
-    # Plot 2: Real Segmented Panorama
-    ax2.imshow(real_mask, cmap="gray", aspect="auto")
-    ax2.set_title(f"Real Segmented Panorama ({real_image_name})")
-    ax2.set_ylabel("Elevation")
-    ax2.set_xticks([])
+    # Plot 2: DEM Skyline (Correctly Oriented)
+    axs[1].imshow(dem_mask, cmap="gray", aspect="auto")
+    axs[1].set_title("2. DEM Skyline (North-Aligned)")
+    axs[1].set_ylabel("Elevation")
 
-    # Plot 3: Overlay
-    # Create an empty RGB image for the overlay
-    h, w = dem_mask.shape
-    overlay = np.zeros((h, w, 3), dtype=np.uint8)
-    # Find the edges of the skylines
-    dem_edge = ndimage.sobel(dem_mask, axis=0) > 0
-    real_edge = ndimage.sobel(real_mask, axis=0) > 0
-    # Color the edges: DEM=Red, Real=Green. Where they overlap, it becomes Yellow.
-    overlay[dem_edge, 0] = 255  # Red channel
-    overlay[real_edge, 1] = 255  # Green channel
+    # Plot 3: Aligned Real Panorama
+    axs[2].imshow(aligned_real_mask, cmap="gray", aspect="auto")
+    axs[2].set_title("3. Real Panorama (Aligned to DEM)")
+    axs[2].set_xlabel("Azimuth")
+    axs[2].set_ylabel("Elevation")
 
-    ax3.imshow(overlay, aspect="auto")
-    ax3.set_title("Overlay (DEM = Red, Real = Green, Overlap = Yellow)")
-    ax3.set_xlabel("Azimuth")
-    ax3.set_ylabel("Elevation")
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    output_dir = Path("./output_plots")
-    output_dir.mkdir(exist_ok=True)
-    save_path = output_dir / f"comparison_{point_id}.png"
-
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path)
     plt.close(fig)
-
-    print(f"✅ Comparison plot saved to: {save_path}")
 
 
 def process_tile_for_multiple_viewpoints(task: Tuple) -> List[Tuple]:
