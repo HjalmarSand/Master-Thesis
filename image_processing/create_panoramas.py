@@ -220,14 +220,8 @@ def build_panoramas(
     output_dir,
     orientation_csv_path=None,
     apply_rotation=True,
-<<<<<<< HEAD
-    manual_rotation_offset_deg=31.0,  # + 5 more for dataset 2 and 3
-    use_edge_detection=False,
-):  # With our undistortion there seems to be about a 16 degree offset between the boats and the cameras orientation
-=======
     manual_rotation_offset_deg=16.0,
 ):
->>>>>>> devHS_new
     """
     Finds corresponding sets of four images, stitches them into intermediate
     and final panoramas, and saves them.
@@ -273,16 +267,12 @@ def build_panoramas(
             print(f"Warning: Could not load orientation CSV: {e}. Skipping rotation.")
             apply_rotation = False
 
-<<<<<<< HEAD
     if manual_rotation_offset_deg != 0.0:
         print(
             f"Applying a constant manual rotation offset of {manual_rotation_offset_deg} to all panoramas."
         )
 
     # Use cam1_left_dir as the reference to find all numbers in the image names as identifier
-=======
-    # Use cam2_left_dir as the reference to find all numbers in the image names
->>>>>>> devHS_new
     base_images = list(Path(cam2_left_dir).glob("*.jpg"))
     if not base_images:
         print(f"Error: No images found in the base directory: {cam1_left_dir}")

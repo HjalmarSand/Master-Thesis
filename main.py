@@ -1507,6 +1507,11 @@ def run_lidar_skyline_generation():
         return False
 
 
+# TODO 1: Read the DEM skyline vectors and remove some degrees at the pixels (offset + the calculated shift)/5120 from the fourier IoU correction
+# 2: Now that they are rotated to the original panoramas we know that the information loss is at 1/4:th plus and 3/4:th of the total width
+# Now we remove some degree deg around these points and rotate the reapply the fourier matching between the panormas
+
+
 # TODO: Maybe one thing we want to do, since the panoramas we have lose some information in the borders where the two camera images connect, perhaps before rotating the panoramas in north normalized direction, just like the dems are, we keep track of how much they need to be rotated, and then where the edges between the front and back facing images are, and cut out a couple of percent HFOV from the DEM simulated image there as well. This is because the DEM image has perfect 360deg coverage while our panoramas has maybe 2x175deg or something similar in practice, even though it should be 2x180deg.
 def run_dem_skyline_encoding():
     """
