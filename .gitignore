@@ -25,3 +25,5 @@ databases/
 *.heif
 *.pkl
 *.pth
+
+*.npz

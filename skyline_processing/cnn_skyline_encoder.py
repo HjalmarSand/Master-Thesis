@@ -12,21 +12,25 @@ import torchvision.transforms as transforms
 from PIL import Image
 from tqdm import tqdm
 
+import constants
+
 
 class CnnEncoder:
     """
-    Encodes binary skyline arrays into feature vectors using a pre-trained CNN.
+    Encodes binary skyline arrays into spatially-aware feature vectors.
     """
 
-    def __init__(self, pooling_strategy: str = "avg"):
+    def __init__(self, pool_target: tuple = (1, 1)):
         """
         Initializes the encoder.
         Args:
-            pooling_strategy (str): 'avg' for AdaptiveAvgPool2d or 'max' for AdaptiveMaxPool2d.
+            pool_target (tuple): The grid size to pool features to, e.g., (1, 1) for
+                                global pooling or (2, 2) for a 4-chunk grid.
         """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.pool_target = pool_target
         print(
-            f"Initializing CNN Encoder on device: {self.device} with '{pooling_strategy}' pooling."
+            f"Initializing CNN Encoder on device: {self.device} with {pool_target} pooling grid."
         )
 
         weights = models.MobileNet_V2_Weights.DEFAULT
@@ -34,10 +38,7 @@ class CnnEncoder:
         self.feature_extractor = model.features.to(self.device)
         self.feature_extractor.eval()
 
-        if pooling_strategy == "max":
-            self.pool = torch.nn.functional.adaptive_max_pool2d
-        else:  # Default to average pooling
-            self.pool = torch.nn.functional.adaptive_avg_pool2d
+        self.pool = torch.nn.functional.adaptive_avg_pool2d
 
         self.transform = transforms.Compose(
             [
@@ -57,13 +58,15 @@ class CnnEncoder:
         img_tensor = self.transform(image_window).unsqueeze(0).to(self.device)
         features = self.feature_extractor(img_tensor)
 
-        # Use the configured pooling function
-        pooled_features = self.pool(features, (1, 1))
+        # --- THIS IS THE KEY CHANGE ---
+        # Pool to the configured grid size (e.g., 2x2) instead of just 1x1
+        pooled_features = self.pool(features, self.pool_target)
 
-        return pooled_features.squeeze().cpu().numpy()
+        # Flatten the grid into a 1D vector and convert to numpy
+        return pooled_features.flatten().cpu().numpy()
 
     def encode_mask_array(
-        self, mask_array: np.ndarray, num_windows: int = 4
+        self, mask_array: np.ndarray, num_windows: int = constants.NUM_WINDOWS
     ) -> np.ndarray:
         """
         Primary method to create a fingerprint from an in-memory NumPy mask array.
@@ -95,11 +98,13 @@ class CnnEncoder:
             return np.array([])
 
 
-def create_cnn_fingerprints_from_lazy_loader(lazy_loaded_data, **kwargs) -> dict:
+def create_cnn_fingerprints_from_lazy_loader(
+    lazy_loaded_data, pool_target: tuple = (2, 2)
+) -> dict:
     """
-    Processes a large, lazy-loaded .npz file (DEM database).
+    NEW: Processes a large, lazy-loaded .npz file (DEM database).
     """
-    encoder = CnnEncoder(**kwargs)  # Pass any config options like pooling_strategy
+    encoder = CnnEncoder(pool_target=pool_target)
     fingerprints = {}
 
     for point_id in tqdm(lazy_loaded_data.files, desc="Encoding DEM with CNN"):
@@ -112,7 +117,7 @@ def create_cnn_fingerprints_from_lazy_loader(lazy_loaded_data, **kwargs) -> dict
 
 
 def create_cnn_fingerprints_for_directory(
-    input_dir: Path, output_filepath: Path, **kwargs
+    input_dir: Path, output_filepath: Path, pool_target: tuple = (2, 2)
 ):
     """
     Processes a directory of real image panoramas.
@@ -123,12 +128,11 @@ def create_cnn_fingerprints_for_directory(
         print(f"No images found in {input_dir}")
         return 1
 
-    encoder = CnnEncoder(**kwargs)
+    encoder = CnnEncoder(pool_target=pool_target)
     fingerprints = {}
     for image_path in tqdm(image_files, desc="Encoding with CNN"):
         with Image.open(image_path).convert("L") as img:
             mask_array = np.array(img)
-            # Use the same core encoding function
             fingerprint = encoder.encode_mask_array(mask_array)
             if fingerprint.size > 0:
                 fingerprints[image_path.stem] = fingerprint
