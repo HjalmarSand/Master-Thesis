@@ -1351,7 +1351,7 @@ def run_batch_validation():
             original_filename = selected_point.filename
             image_number = Path(original_filename).stem
             real_mask_name = f"binary_panorama_{image_number}.png"
-            real_mask_path = selected_dir / "binary_panorama_aligned" / real_mask_name
+            real_mask_path = selected_dir / "binary_panorama" / real_mask_name
 
             if not real_mask_path.exists():
                 tqdm.write(
@@ -1359,7 +1359,9 @@ def run_batch_validation():
                 )
                 continue
 
-            real_mask = np.array(Image.open(real_mask_path))
+            real_mask = np.array(Image.open(real_mask_path).convert("L"))
+
+            real_mask_copy = real_mask.copy()
 
             relevant_files = [
                 f
@@ -1401,7 +1403,9 @@ def run_batch_validation():
             # --- CORE LOGIC CHANGE ---
 
             # 1. Calculate the yaw offset using the ORIGINAL real mask and ORIGINAL DEM mask
-            yaw_offset = skyline_matcher.find_yaw_offset(dem_mask_original, real_mask)
+            yaw_offset = skyline_matcher.find_yaw_offset(
+                dem_mask_original, real_mask_copy
+            )
 
             offset_results.append(
                 {"filename": original_filename, "yaw_offset_deg": yaw_offset}
@@ -1417,7 +1421,9 @@ def run_batch_validation():
             )
 
             # 3. Rotate the real panorama using the calculated offset
-            aligned_real_mask = rotate_panorama_by_orientation(real_mask, yaw_offset)
+            aligned_real_mask = rotate_panorama_by_orientation(
+                real_mask_copy, yaw_offset
+            )
 
             # 4. Calculate similarity score using the ALIGNED real mask and the MODIFIED DEM mask
             similarity_score = calculate_skyline_similarity(
