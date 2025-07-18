@@ -52,3 +52,8 @@ LOGS_DIR = OUTPUT_DIR / "logs"
 DEM_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM"
 
 MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl"
+
+
+# Encoding
+NUM_WINDOWS = 4
+POOL_TARGET = (2, 2)

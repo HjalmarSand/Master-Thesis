@@ -4,6 +4,8 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+import constants
+
 
 def extract_skyline_from_array(img_array: np.ndarray) -> np.ndarray:
     """
@@ -63,7 +65,7 @@ def _calculate_fourier_magnitude(vector: np.ndarray) -> np.ndarray:
 
 
 def encode_single_mask(
-    mask_array: np.ndarray, strategy: str, num_windows: int = 4
+    mask_array: np.ndarray, strategy: str, num_windows: int = constants.NUM_WINDOWS
 ) -> np.ndarray:
     """
     Encodes a single mask array into a Fourier fingerprint using the specified strategy.
@@ -72,6 +74,15 @@ def encode_single_mask(
     skyline_vector = extract_skyline_from_array(mask_array)
     if skyline_vector.size == 0:
         return np.array([])
+
+    # A power of 2 is often good for FFTs. This ensures all vectors are comparable.
+    FIXED_SKYLINE_LENGTH = 4096
+    if len(skyline_vector) != FIXED_SKYLINE_LENGTH:
+        # Create x-axes for the original and new vector lengths
+        original_x = np.linspace(0, 1, len(skyline_vector))
+        new_x = np.linspace(0, 1, FIXED_SKYLINE_LENGTH)
+        # Use linear interpolation to resample the vector to the fixed length
+        skyline_vector = np.interp(new_x, original_x, skyline_vector)
 
     if strategy == "windowed":
         windows = np.array_split(skyline_vector, num_windows)

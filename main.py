@@ -1,10 +1,12 @@
 import argparse
 import gc
+import re
 import sys
 import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
+import cv2
 import matplotlib
 from matplotlib import pyplot as plt
 
@@ -20,6 +22,7 @@ from tqdm import tqdm
 
 import constants
 from AI import evaluate_model, roll_angle_estimator
+from AI.plotting import create_cross_match_plot, create_results_plot
 from AI.roll_angle_estimator import (
     RollEstimatorCNN,
     run_kfold_cross_validation,
@@ -39,7 +42,10 @@ from DEM.DEM_skyline import (
     visualize_single_skyline,
 )
 from image_processing import split_stacked_images
-from image_processing.create_panoramas import build_panoramas
+from image_processing.create_panoramas import (
+    build_panoramas,
+    rotate_panorama_by_orientation,
+)
 from image_processing.fisheye_undistorter import FisheyeUndistorter
 from image_retrieval.colmap_naive_image_retrieval import (
     ColmapImageRetriever,
@@ -1170,18 +1176,18 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
         return False
 
 
-def run_single_point_validation():
+def run_batch_validation():
     """
-    Stage 13: Validate the TILE-CENTRIC logic for a single, user-selected coordinate
-    and compare it visually against the real segmented panorama.
+    Stage 13: For a selected dataset, generate a DEM skyline for every
+    coordinate in its GPS file and save a comparison plot against the real panorama.
     """
     print_stage_header(
         13,
-        "SINGLE-POINT VALIDATION (TILE-CENTRIC LOGIC)",
-        "Testing the optimized data loading architecture on a single point.",
+        "BATCH VALIDATION (DEM vs. REAL)",
+        "Generating a full set of comparison images for a dataset.",
     )
     try:
-        # 1. Select a single viewpoint
+        # --- 1. Select the dataset to process ---
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
             [
@@ -1197,10 +1203,9 @@ def run_single_point_validation():
 
         selected_dir = None
         while True:
-            print("\nPlease select a dataset to validate:")
+            print("\nPlease select a dataset to process:")
             for i, dir_path in enumerate(dataset_dirs):
                 print(f"  [{i}]: {dir_path.name}")
-
             choice_str = input("Enter the number of the dataset: ")
             try:
                 choice_idx = int(choice_str)
@@ -1208,89 +1213,222 @@ def run_single_point_validation():
                     selected_dir = dataset_dirs[choice_idx]
                     break
                 else:
-                    print(
-                        f"\nInvalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
-                    )
+                    print("Invalid input.")
             except ValueError:
-                print("\nInvalid input. Please enter a number.")
+                print("Invalid input.")
 
-        print(f"Using dataset: {selected_dir.name}")
+        # --- 2. Prepare for batch processing ---
+        project_root = Path(__file__).resolve().parent
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
-        print("\nPlease select a data point to validate from the table below:")
-        print(gps_df.head(10).to_string())
-        choice_str = input(f"Enter the index (0-{len(gps_df) - 1}): ")
-        choice_idx = int(choice_str)
-        selected_point = gps_df.iloc[choice_idx]
-        easting, northing = selected_point["easting"], selected_point["northing"]
-        viewpoint_coords = (easting, northing, 1.5)
-        point_id = f"validation_vp_{easting:.0f}_{northing:.0f}"
-
-        # 2. Find relevant tiles for the SINGLE viewpoint
-        print("\nFinding relevant LAZ tiles for the selected point...")
         all_laz_files = find_laz_files()
-        relevant_files = [
-            f
-            for f in all_laz_files
-            if check_file_relevance_from_json(f, viewpoint_coords)
-        ]
-        if not relevant_files:
-            print("No relevant LAZ files found for this coordinate.")
-            return False
-        print(f"Found {len(relevant_files)} relevant LAZ files.")
 
-        # 3. Create tasks for the TILE-CENTRIC worker
-        tasks = [
-            (laz_file, [(point_id, viewpoint_coords)]) for laz_file in relevant_files
-        ]
-        num_processes = max(1, cpu_count() - 2)
-
-        # 4. Run workers and aggregate results
-        print(f"Distributing {len(tasks)} tiles across {num_processes} CPU cores...")
-        num_bins = int(360 / constants.ANGLE_STEP)
-        aggregated_elevations = np.full(num_bins, 0.0)
-
-        with Pool(processes=num_processes) as pool:
-            iterator = pool.imap_unordered(process_tile_for_multiple_viewpoints, tasks)
-            for tile_results in tqdm(
-                iterator, total=len(tasks), desc="Processing LAZ tiles"
-            ):
-                # tile_results is a list like [(point_id, partial_skyline)]
-                for _, partial_skyline in tile_results:
-                    aggregated_elevations = np.maximum(
-                        aggregated_elevations, partial_skyline
-                    )
-
-        # 5. Generate final mask and compare
-        print("Aggregation complete. Generating final mask...")
-        angles = np.linspace(0, 360, num_bins, endpoint=False)
-        dem_mask = generate_skyline_mask_array(
-            angles,
-            aggregated_elevations,
-            constants.PANORAMA_IMG_WIDTH,
-            constants.PANORAMA_IMG_HEIGHT,
+        # Create the dedicated output directory
+        output_dir = (
+            project_root
+            / "output_plots"
+            / "DEM_vs_panorama_same_coordinates"
+            / selected_dir.name
         )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Comparison plots will be saved to: {output_dir}")
 
-        original_filename = selected_point["filename"]
-        image_number = Path(original_filename).stem
-        real_mask_name = f"binary_panorama_{image_number}.png"
-        real_mask_path = selected_dir / "binary_panorama" / real_mask_name
+        offset_results = []
 
-        if not real_mask_path.exists():
-            print(f"Real segmented panorama not found at: {real_mask_path}")
-            return False
-        real_mask = np.array(Image.open(real_mask_path))
+        # --- 3. Loop through every coordinate in the CSV file ---
+        for selected_point in tqdm(
+            gps_df.itertuples(),
+            total=len(gps_df),
+            desc=f"Processing {selected_dir.name}",
+        ):
+            easting, northing = selected_point.easting, selected_point.northing
+            viewpoint_coords = (easting, northing, 1.5)
+            point_id = f"validation_vp_{easting:.0f}_{northing:.0f}"
 
-        similarity_score = calculate_skyline_similarity(dem_mask, real_mask)
-        print(f"Calculated Similarity Score (IoU): {similarity_score:.2%}")
-        visualize_comparison(
-            dem_mask, real_mask, point_id, real_mask_name, similarity_score
+            # Find and load the corresponding real panorama
+            original_filename = selected_point.filename
+            image_number = Path(original_filename).stem
+            real_mask_name = f"binary_panorama_{image_number}.png"
+            real_mask_path = selected_dir / "binary_panorama" / real_mask_name
+
+            if not real_mask_path.exists():
+                tqdm.write(
+                    f"Warning: Real panorama not found for {original_filename}. Skipping."
+                )
+                continue
+
+            real_mask = np.array(Image.open(real_mask_path))
+
+            # Find relevant LAZ files for this specific point
+            relevant_files = [
+                f
+                for f in all_laz_files
+                if check_file_relevance_from_json(f, viewpoint_coords)
+            ]
+            if not relevant_files:
+                tqdm.write(
+                    f"Warning: No relevant LAZ files for {original_filename}. Skipping."
+                )
+                continue
+
+            # Create tasks and run in parallel to generate the DEM skyline
+            tasks = [
+                (laz_file, [(point_id, viewpoint_coords)])
+                for laz_file in relevant_files
+            ]
+            num_processes = max(1, cpu_count() - 2)
+            num_bins = int(360 / constants.ANGLE_STEP)
+            aggregated_elevations = np.full(num_bins, 0.0)
+
+            with Pool(processes=num_processes) as pool:
+                iterator = pool.imap_unordered(
+                    process_tile_for_multiple_viewpoints, tasks
+                )
+                for tile_results in iterator:
+                    for _, partial_skyline in tile_results:
+                        aggregated_elevations = np.maximum(
+                            aggregated_elevations, partial_skyline
+                        )
+
+            # Generate the final DEM mask
+            angles = np.linspace(0, 360, num_bins, endpoint=False)
+            dem_mask = generate_skyline_mask_array(
+                angles,
+                aggregated_elevations,
+                constants.PANORAMA_IMG_WIDTH,
+                constants.PANORAMA_IMG_HEIGHT,
+            )
+
+            original_real_mask = real_mask.copy()
+
+            # 1. Calculate the yaw offset
+            yaw_offset = skyline_matcher.find_yaw_offset(dem_mask, original_real_mask)
+
+            offset_results.append(
+                {"filename": original_filename, "yaw_offset_deg": yaw_offset}
+            )
+
+            # 2. Rotate the real panorama using the calculated offset
+            aligned_real_mask = rotate_panorama_by_orientation(
+                original_real_mask, yaw_offset
+            )
+
+            # 3. Calculate similarity score using the ALIGNED mask for a true comparison
+            similarity_score = calculate_skyline_similarity(dem_mask, aligned_real_mask)
+
+            tqdm.write(
+                f"  -> For {original_filename}: Yaw Offset = {yaw_offset:.2f}°, "
+                f"Post-Alignment IoU = {similarity_score:.2%}"
+            )
+
+            # 4. Generate the new 3-panel comparison plot
+            save_path = output_dir / f"comparison_{image_number}.png"
+            visualize_comparison(
+                original_real_mask=original_real_mask,
+                dem_mask=dem_mask,
+                aligned_real_mask=aligned_real_mask,
+                point_id=point_id,
+                real_image_name=real_mask_name,
+                similarity_score=similarity_score,
+                yaw_offset=yaw_offset,
+                save_path=save_path,
+            )
+
+        print("\nSaving calculated yaw offsets...")
+        offsets_df = pd.DataFrame(offset_results)
+        offsets_save_path = selected_dir / "yaw_offsets.csv"
+        offsets_df.to_csv(offsets_save_path, index=False, float_format="%.4f")
+        print(f"Yaw offsets saved to: {offsets_save_path}")
+
+        print("\nBatch validation complete.")
+        return True
+    except Exception as e:
+        print(f"An error occurred during batch validation: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+# TODO: For all work in the future where we refered to binary panorama we need to now refer to binary_panorama_aligned!!!
+def run_panorama_alignment():
+    """
+    Stage 14: Rotates all binary panoramas in a dataset according to their
+    pre-calculated yaw offsets and saves them to a new directory.
+    """
+    print_stage_header(14, "PANORAMA YAW ALIGNMENT")
+    try:
+        # --- 1. Select the dataset to process ---
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir() and (d / "yaw_offsets.csv").is_file()
+            ]
         )
+        if not dataset_dirs:
+            print(
+                "No datasets with a 'yaw_offsets.csv' file found. Please run Stage 13 first."
+            )
+            return False
 
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to align:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print("Invalid input.")
+            except ValueError:
+                print("Invalid input.")
+
+        # --- 2. Load offsets and prepare directories ---
+        offsets_csv_path = selected_dir / "yaw_offsets.csv"
+        offsets_df = pd.read_csv(offsets_csv_path)
+        offset_lookup = {
+            row.filename: row.yaw_offset_deg for row in offsets_df.itertuples()
+        }
+
+        input_dir = selected_dir / "binary_panorama"
+        output_dir = selected_dir / "binary_panorama_aligned"
+        output_dir.mkdir(exist_ok=True)
+
+        image_paths = sorted(list(input_dir.glob("*.png")))
+        print(f"\nFound {len(image_paths)} panoramas to align. Saving to: {output_dir}")
+
+        # --- 3. Loop, rotate, and save each image ---
+        for img_path in tqdm(image_paths, desc="Aligning Panoramas"):
+            # The key in the CSV is the original filename (e.g., '0801.jpg')
+            image_number = re.search(r"(\d{4})", img_path.name).group(1)
+            lookup_key = f"{image_number}.jpg"
+
+            if lookup_key in offset_lookup:
+                yaw_offset = offset_lookup[lookup_key]
+
+                # Load the image with OpenCV
+                image_to_rotate = cv2.imread(str(img_path))
+
+                # Apply the rotation
+                aligned_image = rotate_panorama_by_orientation(
+                    image_to_rotate, yaw_offset
+                )
+
+                # Save to the new directory
+                save_path = output_dir / img_path.name
+                cv2.imwrite(str(save_path), aligned_image)
+
+        print("\Panorama alignment complete.")
         return True
 
     except Exception as e:
-        print(f"An error occurred during single-point validation: {e}")
+        print(f"An error occurred during panorama alignment: {e}")
         import traceback
 
         traceback.print_exc()
@@ -1303,10 +1441,10 @@ def run_single_point_validation():
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
 def run_lidar_skyline_generation():
     """
-    Stage 14: Generate a LiDAR skyline database with a correct, memory-safe,
+    Stage 15: Generate a LiDAR skyline database with a correct, memory-safe,
     and resilient architecture.
     """
-    print_stage_header(14, "LIDAR SKYLINE MASK GENERATION (MEMORY-SAFE)")
+    print_stage_header(15, "LIDAR SKYLINE MASK GENERATION (MEMORY-SAFE)")
 
     try:
         MAX_CONCURRENT_LAZ_FILES = (
@@ -1510,11 +1648,11 @@ def run_lidar_skyline_generation():
 # TODO: Maybe one thing we want to do, since the panoramas we have lose some information in the borders where the two camera images connect, perhaps before rotating the panoramas in north normalized direction, just like the dems are, we keep track of how much they need to be rotated, and then where the edges between the front and back facing images are, and cut out a couple of percent HFOV from the DEM simulated image there as well. This is because the DEM image has perfect 360deg coverage while our panoramas has maybe 2x175deg or something similar in practice, even though it should be 2x180deg.
 def run_dem_skyline_encoding():
     """
-    Stage 15: Load a DEM skyline mask database and create all fingerprint types
+    Stage 16: Load a DEM skyline mask database and create all fingerprint types
     in a memory-safe way.
     """
     print_stage_header(
-        15,
+        16,
         "DEM SKYLINE ENCODING",
         "Generates fingerprints from the DEM database in a streaming fashion.",
     )
@@ -1562,7 +1700,7 @@ def run_dem_skyline_encoding():
             # CNN encoding
             cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_lazy_loader(
                 skyline_mask_data,
-                pooling_strategy="avg",  # can experiment with 'max' here
+                pool_target=constants.POOL_TARGET,  # Using a 2x2 grid for spatial awareness
             )
         if cnn_fps:
             output_path = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
@@ -1583,23 +1721,22 @@ def run_dem_skyline_encoding():
 
 def run_database_visualization():
     """
-    Stage 16: Loads a mask from the final database closest to a user-selected
-    real-world coordinate for visual inspection.
+    Stage 17: Compares a real panorama to the closest mask in the DEM database.
     """
     print_stage_header(
-        16, "DATABASE VISUALIZATION", "Spot-checking a final skyline mask."
+        17,
+        "DATABASE VISUALIZATION",
+        "Comparing a real panorama to its closest DEM match.",
     )
     try:
         project_root = Path(__file__).parent
         db_path = project_root / "databases" / "dem_database" / "skyline_masks.npz"
 
         if not db_path.exists():
-            print(
-                f"ERROR: Final database not found at '{db_path}'. Please run Stage 14/15 first."
-            )
+            print(f"ERROR: Final database not found at '{db_path}'.")
             return False
 
-        # 1. Select a real-world coordinate
+        # --- 1. Select the dataset interactively ---
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
             [
@@ -1629,20 +1766,55 @@ def run_database_visualization():
             except ValueError:
                 print("Invalid input.")
 
+        # --- 2. Select the specific data point by its 'n' value ---
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
-        print("\nPlease select a data point to find the closest match for:")
-        print(gps_df.head(10).to_string())
-        choice_str = input(f"Enter the index (0-{len(gps_df) - 1}): ")
-        choice_idx = int(choice_str)
-        selected_point = gps_df.iloc[choice_idx]
-        query_coord = np.array([selected_point["easting"], selected_point["northing"]])
 
-        # 2. Search the database for the closest point
+        selected_row = None
+        while True:
+            print("\nPlease select a data point to find the closest match for:")
+            print(gps_df.head(10).to_string())
+            choice_str = input("Enter the value from the 'n' column: ")
+            try:
+                choice_n_val = int(choice_str)
+                # Find the row where the 'n' column matches the input value
+                selected_row = gps_df[gps_df["n"] == choice_n_val]
+
+                if not selected_row.empty:
+                    if len(selected_row) > 1:
+                        print(
+                            f"Warning: Found multiple entries for n={choice_n_val}. Using the first one."
+                        )
+                    break  # Exit loop if a match is found
+                else:
+                    print(
+                        f"Invalid input. Value '{choice_n_val}' not found in the 'n' column."
+                    )
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
+        # --- 3. Extract data and find corresponding files ---
+        query_coord = np.array(
+            [selected_row["easting"].iloc[0], selected_row["northing"].iloc[0]]
+        )
+        original_filename = selected_row["filename"].iloc[0]
+
+        image_number = Path(original_filename).stem
+        real_mask_name = f"binary_panorama_{image_number}.png"
+        real_mask_path = selected_dir / "binary_panorama" / real_mask_name
+
+        if not real_mask_path.exists():
+            print(
+                f"ERROR: Corresponding binary panorama not found at '{real_mask_path}'"
+            )
+            return False
+
+        real_mask = np.array(Image.open(real_mask_path))
+
+        # --- 4. Search the database for the closest point ---
         print("\nSearching database for the closest grid point...")
         with np.load(db_path) as data:
             all_point_ids = data.files
-            # Parse all 'dem_vp_easting_northing' keys into a NumPy array of coordinates
             db_coords = np.array(
                 [
                     [int(pid.split("_")[2]), int(pid.split("_")[3])]
@@ -1650,7 +1822,6 @@ def run_database_visualization():
                 ]
             )
 
-            # Efficiently find the index of the closest point using NumPy
             distances = np.sum((db_coords - query_coord) ** 2, axis=1)
             closest_idx = np.argmin(distances)
             closest_point_id = all_point_ids[closest_idx]
@@ -1658,21 +1829,34 @@ def run_database_visualization():
             print(f"Query Coordinate: ({query_coord[0]:.1f}, {query_coord[1]:.1f})")
             print(f"Closest Found ID: {closest_point_id}")
 
-            # 3. Visualize the result
-            mask_array = data[closest_point_id]
+            dem_mask_array = data[closest_point_id]
 
-            plt.figure(figsize=(12, 3))
-            plt.imshow(mask_array, cmap="gray", aspect="auto")
-            plt.title(f"Skyline Mask for Closest Point: {closest_point_id}")
-            plt.xlabel("Azimuth")
-            plt.ylabel("Elevation")
+            # --- 5. Visualize both images ---
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6))
+            fig.suptitle(f"Comparison for Query '{original_filename}'", fontsize=14)
+
+            ax1.imshow(real_mask, cmap="gray", aspect="auto")
+            ax1.set_title(f"Real Segmented Panorama ({real_mask_name})")
+            ax1.set_xlabel("Azimuth")
+            ax1.set_ylabel("Elevation")
+
+            ax2.imshow(dem_mask_array, cmap="gray", aspect="auto")
+            ax2.set_title(f"Closest DEM Skyline Mask ({closest_point_id})")
+            ax2.set_xlabel("Azimuth")
+            ax2.set_ylabel("Elevation")
+
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
 
             output_dir = project_root / "output_plots"
             output_dir.mkdir(exist_ok=True)
-            save_path = output_dir / f"database_visualization_{closest_point_id}.png"
+            save_path = (
+                output_dir
+                / "real_closest_database_point_comparison"
+                / f"db_comparison_{image_number}.png"
+            )
             plt.savefig(save_path)
             plt.close()
-            print(f"✅ Visualization saved to: {save_path}")
+            print(f"Comparison visualization saved to: {save_path}")
 
         return True
 
@@ -1686,11 +1870,11 @@ def run_database_visualization():
 
 def run_skyline_fourier_encoder():
     """
-    Stage 17: Select a dataset and create fingerprint databases in the project root
+    Stage 18: Select a dataset and create fingerprint databases in the project root
     under a new per-dataset directory structure.
     """
     print_stage_header(
-        17,
+        18,
         "SKYLINE FINGERPRINTING",
         "Generating 'global' and 'windowed' fingerprint databases.",
     )
@@ -1775,11 +1959,11 @@ def run_skyline_fourier_encoder():
 
 def run_matching_analysis():
     """
-    Stage 18: Perform a self-matching analysis on a fingerprint database,
+    Stage 19: Perform a self-matching analysis on a fingerprint database,
     showing detailed per-window scores for windowed strategies.
     """
     print_stage_header(
-        18,
+        19,
         "FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other to test fingerprint quality.",
     )
@@ -1812,7 +1996,7 @@ def run_matching_analysis():
                 print(" Please enter a number.")
 
         if "windowed" in str(selected_fp_path):
-            num_windows = 4
+            num_windows = constants.NUM_WINDOWS
             print(f"\nWindowed strategy detected (using {num_windows} windows).")
         else:
             num_windows = 1
@@ -1854,10 +2038,10 @@ def run_matching_analysis():
 
 def run_cnn_encoding():
     """
-    Stage 19: Select a dataset and create CNN-based fingerprints for its binary panoramas.
+    Stage 20: Select a dataset and create CNN-based fingerprints for its binary panoramas.
     """
     print_stage_header(
-        19,
+        20,
         "CNN SKYLINE ENCODING",
         "Generating rich feature vectors using a pre-trained CNN.",
     )
@@ -1905,7 +2089,9 @@ def run_cnn_encoding():
         output_path = output_dir / "fingerprints.npz"
 
         exit_code = cnn_skyline_encoder.create_cnn_fingerprints_for_directory(
-            input_dir=input_binary_dir, output_filepath=output_path
+            input_dir=input_binary_dir,
+            output_filepath=output_path,
+            pool_target=constants.POOL_TARGET,  # Must also be (2, 2)
         )
 
         return exit_code == 0
@@ -1920,11 +2106,11 @@ def run_cnn_encoding():
 
 def run_cnn_matching_analysis():
     """
-    Stage 20: Perform a self-matching analysis on a CNN-based fingerprint
+    Stage 21: Perform a self-matching analysis on a CNN-based fingerprint
     database to validate the encoding method.
     """
     print_stage_header(
-        20,
+        21,
         "CNN FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other using CNN features.",
     )
@@ -1959,7 +2145,10 @@ def run_cnn_matching_analysis():
 
         # The CNN encoder also uses 4 windows, so we can reuse the matcher perfectly
         results = skyline_matcher.run_self_matching(
-            fingerprint_path=selected_fp_path, num_samples=10, top_n=5, num_windows=4
+            fingerprint_path=selected_fp_path,
+            num_samples=10,
+            top_n=5,
+            num_windows=constants.NUM_WINDOWS,
         )
 
         if results:
@@ -1990,91 +2179,193 @@ def run_cnn_matching_analysis():
         return False
 
 
-def run_dem_visualization():
+def run_fourier_cross_matching_analysis():
     """
-    Stage 21: Visualize a few sample DEM skylines using coordinates from a dataset's GPS file.
+    Stage 22: Match real image Fourier fingerprints against the simulated DEM database.
     """
-    print_stage_header(
-        21,
-        "VISUALIZE DEM SKYLINE MASKS",
-        "Displaying sample masks generated from LiDAR data.",
-    )
+    print_stage_header(22, "FOURIER CROSS-MATCHING ANALYSIS (REAL VS. DEM)")
     try:
-        # 1. Check for the DEM database
-        project_root = Path(__file__).resolve().parent
-        dem_db_path = project_root / "databases" / "dem_database" / "skyline_masks.npz"
-        if not dem_db_path.exists():
-            print(f"DEM database not found at '{dem_db_path}'.")
-            print("   Please run Stage 12 (LIDAR SKYLINE MASK GENERATION) first.")
+        project_root = Path(__file__).parent
+        db_root_dir = project_root / "databases"
+
+        available_query_dbs = sorted(list(db_root_dir.glob("dataset*/*fourier*/*.npz")))
+        if not available_query_dbs:
+            print("No real-image Fourier fingerprint databases found.")
             return False
 
-        # 2. Interactively select a dataset to get coordinates from
-        datasets_root_dir = Path(constants.IMAGES_DIR)
-        dataset_dirs = sorted(
-            [
-                d
-                for d in datasets_root_dir.iterdir()
-                if d.is_dir()
-                and (d / "gps_interpolated_with_orientation.csv").is_file()
-            ]
-        )
-        if not dataset_dirs:
-            print("No datasets with 'gps_interpolated_with_orientation.csv' found.")
-            return False
-
-        selected_dir = None
+        selected_query_path = None
         while True:
-            print(
-                "\nPlease select a dataset to pull GPS coordinates from for visualization:"
-            )
-            for i, dir_path in enumerate(dataset_dirs):
-                print(f"  [{i}]: {dir_path.name}")
-            choice_str = input("Enter the number of the dataset: ")
+            print("\nPlease select a query fingerprint file (real images):")
+            for i, file_path in enumerate(available_query_dbs):
+                print(f"  [{i}]: {file_path.relative_to(project_root)}")
+            choice_str = input("Enter number: ")
             try:
                 choice_idx = int(choice_str)
-                if 0 <= choice_idx < len(dataset_dirs):
-                    selected_dir = dataset_dirs[choice_idx]
+                if 0 <= choice_idx < len(available_query_dbs):
+                    selected_query_path = available_query_dbs[choice_idx]
                     break
                 else:
                     print("Invalid choice.")
             except ValueError:
                 print("Please enter a number.")
 
-        # 3. Load CSV and find closest points in the DEM database
-        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
-        print(f"\nLoading coordinates from {gps_csv_path.name}...")
-        gps_df = pd.read_csv(gps_csv_path)
+        strategy = "windowed" if "windowed" in selected_query_path.name else "global"
+        dem_fp_db_path = (
+            db_root_dir
+            / "dem_database"
+            / f"fourier_{strategy}_fingerprints"
+            / "fingerprints.npz"
+        )
+        dem_mask_db_path = (
+            db_root_dir / "dem_database" / "skyline_masks.npz"
+        )  # Path to the DEM masks
 
-        # Take up to 3 random sample points from the CSV
-        num_samples = min(3, len(gps_df))
-        sample_points = gps_df.sample(n=num_samples)
-        print(f"\nAttempting to visualize {num_samples} points from the trajectory.")
-        print(
-            "Note: Finding the NEAREST grid point in the DEM database for each sample."
+        dataset_name = selected_query_path.parent.parent.name
+        gps_csv_path = (
+            Path(constants.IMAGES_DIR)
+            / dataset_name
+            / "gps_interpolated_with_orientation.csv"
         )
 
-        with np.load(dem_db_path) as data:
-            db_keys = data.files
-            # Parse 'dem_vp_easting_northing' keys into a numpy array of coordinates
-            db_coords = np.array(
-                [[int(k.split("_")[2]), int(k.split("_")[3])] for k in db_keys]
+        print(gps_csv_path)
+
+        results, mean_error = skyline_matcher.run_cross_matching(
+            query_fp_path=selected_query_path,
+            dem_fp_path=dem_fp_db_path,
+            gps_csv_path=gps_csv_path,
+        )
+
+        if results:
+            print_separator(
+                f"Cross-Matching Results (Mean Top-1 Error: {mean_error:.2f} m)"
             )
 
-            for _, row in sample_points.iterrows():
-                query_coord = np.array([row["easting"], row["northing"]])
-                # Find the index of the closest coordinate in the database
-                distances = np.sum((db_coords - query_coord) ** 2, axis=1)
-                closest_idx = np.argmin(distances)
-                closest_point_id = db_keys[closest_idx]
+            output_plot_dir = (
+                project_root / "output_plots" / f"fourier_cross_match_{dataset_name}"
+            )
 
-                # Call the visualization function
-                visualize_single_skyline(dem_db_path, closest_point_id)
+            for result in results:
+                print(f"\n  Query: {result['query']}")
+                for match in result["top_matches"]:
+                    print(
+                        f"    -> Match: {match['match_key']:<30} | Score: {match['score']:.4f} | Error: {match['error_m']:.2f} m"
+                    )
 
-        print("\nDEM Visualization complete.")
+                # Find the query image path
+                query_image_path = (
+                    Path(constants.IMAGES_DIR)
+                    / dataset_name
+                    / "binary_panorama"
+                    / f"{result['query']}.png"
+                )
+                if query_image_path.exists():
+                    plot_save_path = output_plot_dir / f"{result['query']}_matches.png"
+                    create_cross_match_plot(
+                        query_image_path=query_image_path,
+                        top_matches=result["top_matches"],
+                        dem_mask_db_path=dem_mask_db_path,
+                        save_path=plot_save_path,
+                    )
+            print(f"\nVisualizations saved to: {output_plot_dir}")
+
         return True
-
     except Exception as e:
-        print(f"An error occurred during DEM visualization: {e}")
+        print(f"An error occurred during cross-matching: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_cnn_cross_matching_analysis():
+    """
+    Stage 23: Match real image CNN fingerprints against the simulated DEM database.
+    """
+    print_stage_header(23, "CNN CROSS-MATCHING ANALYSIS (REAL VS. DEM)")
+    try:
+        project_root = Path(__file__).parent
+        db_root_dir = project_root / "databases"
+
+        # --- Select the REAL image database to use as queries ---
+        available_query_dbs = sorted(
+            list(db_root_dir.glob("dataset*/cnn_fingerprints/*.npz"))
+        )
+        if not available_query_dbs:
+            print("No real-image CNN fingerprint databases found.")
+            return False
+
+        selected_query_path = None
+        while True:
+            print("\nPlease select a query fingerprint file (real images):")
+            for i, file_path in enumerate(available_query_dbs):
+                print(f"  [{i}]: {file_path.relative_to(project_root)}")
+            choice_str = input("Enter number: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(available_query_dbs):
+                    selected_query_path = available_query_dbs[choice_idx]
+                    break
+                else:
+                    print("Invalid choice.")
+            except ValueError:
+                print("Please enter a number.")
+
+        dem_fp_db_path = (
+            db_root_dir / "dem_database" / "cnn_fingerprints" / "fingerprints.npz"
+        )
+        dem_mask_db_path = db_root_dir / "dem_database" / "skyline_masks.npz"
+
+        dataset_name = selected_query_path.parent.parent.name
+        gps_csv_path = (
+            Path(constants.IMAGES_DIR)
+            / dataset_name
+            / "gps_interpolated_with_orientation.csv"
+        )
+
+        results, mean_error = skyline_matcher.run_cross_matching(
+            query_fp_path=selected_query_path,
+            dem_fp_path=dem_fp_db_path,
+            gps_csv_path=gps_csv_path,
+            num_samples=20,
+            top_n=5,
+            num_windows=constants.NUM_WINDOWS,
+        )
+
+        if results:
+            print_separator(
+                f"Cross-Matching Results (Mean Top-1 Error: {mean_error:.2f} m)"
+            )
+
+            output_plot_dir = (
+                project_root / "output_plots" / f"cnn_cross_match_{dataset_name}"
+            )
+
+            for result in results:
+                print(f"\n  Query: {result['query']}")
+                for match in result["top_matches"]:
+                    print(
+                        f"    -> Match: {match['match_key']:<30} | Score: {match['score']:.4f} | Error: {match['error_m']:.2f} m"
+                    )
+
+                # Find the query image path
+                query_image_path = (
+                    Path(constants.IMAGES_DIR)
+                    / dataset_name
+                    / "binary_panorama"
+                    / f"{result['query']}.png"
+                )
+                if query_image_path.exists():
+                    plot_save_path = output_plot_dir / f"{result['query']}_matches.png"
+                    create_cross_match_plot(
+                        query_image_path=query_image_path,
+                        top_matches=result["top_matches"],
+                        dem_mask_db_path=dem_mask_db_path,
+                        save_path=plot_save_path,
+                    )
+            print(f"\nVisualizations saved to: {output_plot_dir}")
+        return True
+    except Exception as e:
+        print(f"An error occurred during cross-matching: {e}")
         import traceback
 
         traceback.print_exc()
@@ -2132,15 +2423,23 @@ def main():
             "Analyze Retrieval Accuracy",
             lambda: analyze_retrieval_accuracy(args.sample_rate),
         ),
-        13: ("Single Point Validation", run_single_point_validation),
-        14: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
-        15: ("Encode DEM Skylines", run_dem_skyline_encoding),
-        16: ("Visualize Database Mask", run_database_visualization),
-        17: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
-        18: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
-        19: ("Fourier Matching Analysis", run_matching_analysis),
-        20: ("CNN Matching Analysis", run_cnn_matching_analysis),
-        21: ("Visualize DEM Skylines", run_dem_visualization),
+        13: (
+            "Batch Point Validation same Coordinates with DEM and Panorama",
+            run_batch_validation,
+        ),
+        14: ("Apply Panorama Alignment", run_panorama_alignment),
+        15: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
+        16: ("Encode DEM Skylines", run_dem_skyline_encoding),
+        17: ("Visualize Database Mask", run_database_visualization),
+        18: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
+        19: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
+        20: ("Fourier Database Self-Matching Analysis", run_matching_analysis),
+        21: ("CNN Database Self-Matching Analysis", run_cnn_matching_analysis),
+        22: (
+            "Fourier Cross-Matching (Real vs. DEM)",
+            run_fourier_cross_matching_analysis,
+        ),
+        23: ("CNN Cross-Matching (Real vs. DEM)", run_cnn_cross_matching_analysis),
     }
 
     # Determine which stages to run
