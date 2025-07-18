@@ -1176,10 +1176,106 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
         return False
 
 
+def modify_dem_mask_for_fov_loss(
+    dem_mask: np.ndarray,
+    yaw_offset: float,
+    orientation: float,
+    manual_offset_deg: float,
+    gap_width_degrees: float,
+) -> np.ndarray:
+    """
+    Modifies a DEM skyline mask to simulate information loss from stitched panoramas.
+
+    This function removes two vertical bands (gaps) from the DEM mask to mimic the
+    missing field-of-view at the stitch seams of the real panoramas. The remaining
+    parts of the mask are then stretched to fill the original image width.
+
+    Args:
+        dem_mask (np.ndarray): The original 360-degree DEM skyline mask.
+        yaw_offset (float): The calculated yaw offset (in degrees) to align the
+                            DEM mask with the real panorama.
+        orientation (float): The camera orientation (in degrees from North) from GPS data.
+        manual_offset_deg (float): A manual constant offset in degrees.
+        gap_width_degrees (float): The total angular width of each gap to be removed.
+
+    Returns:
+        np.ndarray: The modified DEM mask with gaps removed and content stretched.
+    """
+    height, width = dem_mask.shape[:2]
+
+    # --- 1. Calculate the center of the first gap ---
+    # The total rotation is the sum of the boat's orientation, the fine-tuned yaw
+    # offset, and any manual hardware offset.
+    # We use modulo 360 to handle wrap-around angles.
+    total_rotation_deg = (manual_offset_deg + yaw_offset + orientation) % 360.0
+
+    # Convert the angle to a pixel column for the center of the first gap
+    gap1_center_px = (total_rotation_deg / 360.0) * width
+
+    # --- 2. Calculate the center of the second gap (180 degrees away) ---
+    pixels_for_180_deg = width / 2
+    gap2_center_px = (gap1_center_px + pixels_for_180_deg) % width
+
+    # --- 3. Determine the columns to remove for both gaps ---
+    gap_width_px = int(round((gap_width_degrees / 360.0) * width))
+    half_gap_px = gap_width_px // 2
+
+    # Create a mask of columns to KEEP, initially all True
+    cols_to_keep = np.ones(width, dtype=bool)
+    all_col_indices = np.arange(width)
+
+    # Identify and mark columns to remove for the first gap
+    start1 = int(round(gap1_center_px - half_gap_px))
+    end1 = int(round(gap1_center_px + half_gap_px))
+    indices_to_remove1 = (all_col_indices >= start1) & (all_col_indices < end1)
+    # Handle wrap-around (if the gap crosses the 0-degree seam)
+    if start1 < 0:
+        indices_to_remove1 = (all_col_indices >= (start1 + width)) | (
+            all_col_indices < end1
+        )
+    elif end1 > width:
+        indices_to_remove1 = (all_col_indices >= start1) | (
+            all_col_indices < (end1 - width)
+        )
+
+    cols_to_keep[indices_to_remove1] = False
+
+    # Identify and mark columns to remove for the second gap
+    start2 = int(round(gap2_center_px - half_gap_px))
+    end2 = int(round(gap2_center_px + half_gap_px))
+    indices_to_remove2 = (all_col_indices >= start2) & (all_col_indices < end2)
+    # Handle wrap-around
+    if start2 < 0:
+        indices_to_remove2 = (all_col_indices >= (start2 + width)) | (
+            all_col_indices < end2
+        )
+    elif end2 > width:
+        indices_to_remove2 = (all_col_indices >= start2) | (
+            all_col_indices < (end2 - width)
+        )
+
+    cols_to_keep[indices_to_remove2] = False
+
+    # --- 4. Create the gapped mask and stretch it ---
+    # Select only the columns we want to keep
+    gapped_mask = dem_mask[:, cols_to_keep]
+
+    # Resize the gapped mask back to the original width, effectively stretching it.
+    # INTER_NEAREST is crucial to maintain the binary nature of the mask.
+    modified_dem_mask = cv2.resize(
+        gapped_mask, (width, height), interpolation=cv2.INTER_NEAREST
+    )
+
+    return modified_dem_mask
+
+
 def run_batch_validation():
     """
     Stage 13: For a selected dataset, generate a DEM skyline for every
     coordinate in its GPS file and save a comparison plot against the real panorama.
+
+    **This version modifies the DEM skyline to account for FOV loss in the real
+    panoramas before calculating similarity.**
     """
     print_stage_header(
         13,
@@ -1187,6 +1283,13 @@ def run_batch_validation():
         "Generating a full set of comparison images for a dataset.",
     )
     try:
+        # --- Constants for DEM Modification ---
+        # Per your formula and description
+        MANUAL_OFFSET_DEG = 16.0
+        # Total degrees of information loss. Assuming 5 degrees per seam.
+        # This means each gap will be 5 degrees wide.
+        GAP_WIDTH_DEG = 5.0
+
         # --- 1. Select the dataset to process ---
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
@@ -1223,7 +1326,6 @@ def run_batch_validation():
         gps_df = pd.read_csv(gps_csv_path)
         all_laz_files = find_laz_files()
 
-        # Create the dedicated output directory
         output_dir = (
             project_root
             / "output_plots"
@@ -1242,10 +1344,10 @@ def run_batch_validation():
             desc=f"Processing {selected_dir.name}",
         ):
             easting, northing = selected_point.easting, selected_point.northing
+            orientation_from_csv = selected_point.Orientation
             viewpoint_coords = (easting, northing, 1.5)
             point_id = f"validation_vp_{easting:.0f}_{northing:.0f}"
 
-            # Find and load the corresponding real panorama
             original_filename = selected_point.filename
             image_number = Path(original_filename).stem
             real_mask_name = f"binary_panorama_{image_number}.png"
@@ -1259,7 +1361,6 @@ def run_batch_validation():
 
             real_mask = np.array(Image.open(real_mask_path))
 
-            # Find relevant LAZ files for this specific point
             relevant_files = [
                 f
                 for f in all_laz_files
@@ -1271,7 +1372,6 @@ def run_batch_validation():
                 )
                 continue
 
-            # Create tasks and run in parallel to generate the DEM skyline
             tasks = [
                 (laz_file, [(point_id, viewpoint_coords)])
                 for laz_file in relevant_files
@@ -1290,42 +1390,50 @@ def run_batch_validation():
                             aggregated_elevations, partial_skyline
                         )
 
-            # Generate the final DEM mask
             angles = np.linspace(0, 360, num_bins, endpoint=False)
-            dem_mask = generate_skyline_mask_array(
+            dem_mask_original = generate_skyline_mask_array(
                 angles,
                 aggregated_elevations,
                 constants.PANORAMA_IMG_WIDTH,
                 constants.PANORAMA_IMG_HEIGHT,
             )
 
-            original_real_mask = real_mask.copy()
+            # --- CORE LOGIC CHANGE ---
 
-            # 1. Calculate the yaw offset
-            yaw_offset = skyline_matcher.find_yaw_offset(dem_mask, original_real_mask)
+            # 1. Calculate the yaw offset using the ORIGINAL real mask and ORIGINAL DEM mask
+            yaw_offset = skyline_matcher.find_yaw_offset(dem_mask_original, real_mask)
 
             offset_results.append(
                 {"filename": original_filename, "yaw_offset_deg": yaw_offset}
             )
 
-            # 2. Rotate the real panorama using the calculated offset
-            aligned_real_mask = rotate_panorama_by_orientation(
-                original_real_mask, yaw_offset
+            # 2. **NEW**: Modify the DEM mask to simulate FOV loss
+            dem_mask_modified = modify_dem_mask_for_fov_loss(
+                dem_mask=dem_mask_original,
+                yaw_offset=yaw_offset,
+                orientation=orientation_from_csv,
+                manual_offset_deg=MANUAL_OFFSET_DEG,
+                gap_width_degrees=GAP_WIDTH_DEG,
             )
 
-            # 3. Calculate similarity score using the ALIGNED mask for a true comparison
-            similarity_score = calculate_skyline_similarity(dem_mask, aligned_real_mask)
+            # 3. Rotate the real panorama using the calculated offset
+            aligned_real_mask = rotate_panorama_by_orientation(real_mask, yaw_offset)
+
+            # 4. Calculate similarity score using the ALIGNED real mask and the MODIFIED DEM mask
+            similarity_score = calculate_skyline_similarity(
+                dem_mask_modified, aligned_real_mask
+            )
 
             tqdm.write(
                 f"  -> For {original_filename}: Yaw Offset = {yaw_offset:.2f}°, "
-                f"Post-Alignment IoU = {similarity_score:.2%}"
+                f"Post-Modification IoU = {similarity_score:.2%}"
             )
 
-            # 4. Generate the new 3-panel comparison plot
+            # 5. Generate the comparison plot, passing the MODIFIED DEM mask for visualization
             save_path = output_dir / f"comparison_{image_number}.png"
             visualize_comparison(
-                original_real_mask=original_real_mask,
-                dem_mask=dem_mask,
+                original_real_mask=real_mask,
+                dem_mask=dem_mask_modified,  # Pass the modified mask here
                 aligned_real_mask=aligned_real_mask,
                 point_id=point_id,
                 real_image_name=real_mask_name,
@@ -1333,6 +1441,8 @@ def run_batch_validation():
                 yaw_offset=yaw_offset,
                 save_path=save_path,
             )
+            # You might want to update visualize_comparison to add a note in the title
+            # like "(Modified for FOV Loss)" to avoid confusion.
 
         print("\nSaving calculated yaw offsets...")
         offsets_df = pd.DataFrame(offset_results)
