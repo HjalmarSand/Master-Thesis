@@ -1187,7 +1187,7 @@ def run_batch_validation():
         "Generating a full set of comparison images for a dataset.",
     )
     try:
-        # --- 1. Select the dataset to process ---
+        #  1. Select the dataset to process
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
             [
@@ -1217,7 +1217,7 @@ def run_batch_validation():
             except ValueError:
                 print("Invalid input.")
 
-        # --- 2. Prepare for batch processing ---
+        #  2. Prepare for batch processing
         project_root = Path(__file__).resolve().parent
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
@@ -1235,7 +1235,7 @@ def run_batch_validation():
 
         offset_results = []
 
-        # --- 3. Loop through every coordinate in the CSV file ---
+        #  3. Loop through every coordinate in the CSV file
         for selected_point in tqdm(
             gps_df.itertuples(),
             total=len(gps_df),
@@ -1249,7 +1249,7 @@ def run_batch_validation():
             original_filename = selected_point.filename
             image_number = Path(original_filename).stem
             real_mask_name = f"binary_panorama_{image_number}.png"
-            real_mask_path = selected_dir / "binary_panorama" / real_mask_name
+            real_mask_path = selected_dir / "binary_panorama_aligned" / real_mask_name
 
             if not real_mask_path.exists():
                 tqdm.write(
@@ -1358,7 +1358,7 @@ def run_panorama_alignment():
     """
     print_stage_header(14, "PANORAMA YAW ALIGNMENT")
     try:
-        # --- 1. Select the dataset to process ---
+        #  1. Select the dataset to process
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
             [
@@ -1389,7 +1389,7 @@ def run_panorama_alignment():
             except ValueError:
                 print("Invalid input.")
 
-        # --- 2. Load offsets and prepare directories ---
+        #  2. Load offsets and prepare directories
         offsets_csv_path = selected_dir / "yaw_offsets.csv"
         offsets_df = pd.read_csv(offsets_csv_path)
         offset_lookup = {
@@ -1403,7 +1403,7 @@ def run_panorama_alignment():
         image_paths = sorted(list(input_dir.glob("*.png")))
         print(f"\nFound {len(image_paths)} panoramas to align. Saving to: {output_dir}")
 
-        # --- 3. Loop, rotate, and save each image ---
+        #  3. Loop, rotate, and save each image
         for img_path in tqdm(image_paths, desc="Aligning Panoramas"):
             # The key in the CSV is the original filename (e.g., '0801.jpg')
             image_number = re.search(r"(\d{4})", img_path.name).group(1)
@@ -1741,7 +1741,7 @@ def run_database_visualization():
             print(f"ERROR: Final database not found at '{db_path}'.")
             return False
 
-        # --- 1. Select the dataset interactively ---
+        #  1. Select the dataset interactively
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
             [
@@ -1771,7 +1771,7 @@ def run_database_visualization():
             except ValueError:
                 print("Invalid input.")
 
-        # --- 2. Select the specific data point by its 'n' value ---
+        #  2. Select the specific data point by its 'n' value
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
 
@@ -1798,7 +1798,7 @@ def run_database_visualization():
             except ValueError:
                 print("Invalid input. Please enter a number.")
 
-        # --- 3. Extract data and find corresponding files ---
+        #  3. Extract data and find corresponding files
         query_coord = np.array(
             [selected_row["easting"].iloc[0], selected_row["northing"].iloc[0]]
         )
@@ -1806,7 +1806,7 @@ def run_database_visualization():
 
         image_number = Path(original_filename).stem
         real_mask_name = f"binary_panorama_{image_number}.png"
-        real_mask_path = selected_dir / "binary_panorama" / real_mask_name
+        real_mask_path = selected_dir / "binary_panorama_aligned" / real_mask_name
 
         if not real_mask_path.exists():
             print(
@@ -1816,7 +1816,7 @@ def run_database_visualization():
 
         real_mask = np.array(Image.open(real_mask_path))
 
-        # --- 4. Search the database for the closest point ---
+        #  4. Search the database for the closest point
         print("\nSearching database for the closest grid point...")
         with np.load(db_path) as data:
             all_point_ids = data.files
@@ -1836,7 +1836,7 @@ def run_database_visualization():
 
             dem_mask_array = data[closest_point_id]
 
-            # --- 5. Visualize both images ---
+            #  5. Visualize both images
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6))
             fig.suptitle(f"Comparison for Query '{original_filename}'", fontsize=14)
 
@@ -1890,7 +1890,7 @@ def run_skyline_fourier_encoder():
             [
                 d
                 for d in datasets_root_dir.iterdir()
-                if d.is_dir() and (d / "binary_panorama").is_dir()
+                if d.is_dir() and (d / "binary_panorama_aligned").is_dir()
             ]
         )
 
@@ -1918,7 +1918,7 @@ def run_skyline_fourier_encoder():
 
         print(f"\nFingerprinting skylines for dataset: {selected_dir.name}")
 
-        input_binary_dir = selected_dir / "binary_panorama"
+        input_binary_dir = selected_dir / "binary_panorama_aligned"
         dataset_name = selected_dir.name
 
         project_root = Path(__file__).parent
@@ -2057,7 +2057,7 @@ def run_cnn_encoding():
             [
                 d
                 for d in datasets_root_dir.iterdir()
-                if d.is_dir() and (d / "binary_panorama").is_dir()
+                if d.is_dir() and (d / "binary_panorama_aligned").is_dir()
             ]
         )
 
@@ -2085,7 +2085,7 @@ def run_cnn_encoding():
 
         print(f"\nEncoding skylines for dataset: {selected_dir.name}")
 
-        input_binary_dir = selected_dir / "binary_panorama"
+        input_binary_dir = selected_dir / "binary_panorama_aligned"
         dataset_name = selected_dir.name
 
         # Define the new output directory structure
@@ -2260,7 +2260,7 @@ def run_fourier_cross_matching_analysis():
                 query_image_path = (
                     Path(constants.IMAGES_DIR)
                     / dataset_name
-                    / "binary_panorama"
+                    / "binary_panorama_aligned"
                     / f"{result['query']}.png"
                 )
                 if query_image_path.exists():
@@ -2291,7 +2291,7 @@ def run_cnn_cross_matching_analysis():
         project_root = Path(__file__).parent
         db_root_dir = project_root / "databases"
 
-        # --- Select the REAL image database to use as queries ---
+        #  Select the REAL image database to use as queries
         available_query_dbs = sorted(
             list(db_root_dir.glob("dataset*/cnn_fingerprints/*.npz"))
         )
@@ -2356,7 +2356,7 @@ def run_cnn_cross_matching_analysis():
                 query_image_path = (
                     Path(constants.IMAGES_DIR)
                     / dataset_name
-                    / "binary_panorama"
+                    / "binary_panorama_aligned"
                     / f"{result['query']}.png"
                 )
                 if query_image_path.exists():
