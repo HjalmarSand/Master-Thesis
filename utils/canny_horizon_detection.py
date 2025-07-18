@@ -1,209 +1,162 @@
+import itertools
 import math
+import time
 
 import cv2
 import numpy as np
-
-# --- TUNING PARAMETERS ---
-# Canny Edge Detector thresholds
-CANNY_THRESHOLD_1 = 50
-CANNY_THRESHOLD_2 = 150
-
-# Gaussian Blur kernel size (must be an odd number)
-BLUR_KERNEL_SIZE = (5, 5)
-
-# Hough Line Transform parameters
-HOUGH_THRESHOLD = 50  # Minimum number of votes to consider a line
-HOUGH_MIN_LINE_LENGTH = 50  # Minimum length of a line
-HOUGH_MAX_LINE_GAP = 10  # Maximum allowed gap between points on the same line
-
-# --- Region of Interest (ROI) Parameters ---
-# We create a trapezoid, ignoring the top and bottom portions of the image.
-# This helps to exclude clouds at the top and boat wakes/foreground at the bottom.
-# Values are percentages of the total image height.
-ROI_TOP_IGNORE_PERCENT = 0.33  # Ignore top 33% of the image (sky/clouds)
-ROI_BOTTOM_IGNORE_PERCENT = 0.4  # Ignore bottom 25% of the image (boat/wake)
-
-# --- Horizon Line Filtering ---
-# Angle range (in degrees) to consider a line as a potential horizon candidate.
-# A narrow range like [-15, 15] is good for rejecting non-horizon lines.
-HORIZON_ANGLE_RANGE = (-15.0, 15.0)
+import pandas as pd
 
 
-def calculate_weighted_horizon_angle(lines):
+def calculate_weighted_horizon_angle(lines, params):
     """
-    Calculates a single, robust roll angle from a list of detected lines.
-    It does this by computing a weighted average of the angles, where the
-    weight of each line is its length.
-
-    Args:
-        lines: A list of lines detected by HoughLinesP.
-
-    Returns:
-        The final calculated roll angle in degrees, or 0.0 if no valid lines are found.
+    Calculates the weighted horizon angle.
+    Now accepts a 'params' dictionary for HORIZON_ANGLE_RANGE.
     """
     if lines is None:
         return 0.0
 
+    horizon_angle_range = params["HORIZON_ANGLE_RANGE"]
+
     candidate_lines = []
     for line_segment in lines:
         x1, y1, x2, y2 = line_segment[0]
-        # Calculate angle and length
         angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
         length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-
-        # Filter lines to be within the specified angle range (near horizontal)
-        if HORIZON_ANGLE_RANGE[0] < angle < HORIZON_ANGLE_RANGE[1]:
+        if horizon_angle_range[0] < angle < horizon_angle_range[1]:
             candidate_lines.append({"angle": angle, "length": length})
 
     if not candidate_lines:
-        print("Warning: No candidate horizon lines found.")
         return 0.0
 
-    # Calculate the weighted average of the angles
     weighted_angle_sum = sum(line["angle"] * line["length"] for line in candidate_lines)
     total_length = sum(line["length"] for line in candidate_lines)
+    return weighted_angle_sum / total_length if total_length > 0 else 0.0
 
-    return weighted_angle_sum / total_length
 
-
-def rotate_and_resize(image, angle_degrees):
+def get_roll_angle_for_image(image_path, params):
     """
-    Rotates an image by a given angle and resizes the canvas to fit the
-    entire rotated image without cropping the corners.
-
-    Args:
-        image: The original image to rotate.
-        angle_degrees: The angle to rotate the image by, in degrees.
-
-    Returns:
-        The rotated image.
+    Streamlined function that now accepts a 'params' dictionary
+    containing all the tuning parameters for a single run.
     """
-    h, w = image.shape[:2]
-    center = (w // 2, h // 2)
+    original_image = cv2.imread(image_path)
+    if original_image is None:
+        return None
 
-    # Get the rotation matrix
-    M = cv2.getRotationMatrix2D(center, angle_degrees, 1.0)
+    gray_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
+    blurred_image = cv2.GaussianBlur(gray_image, params["BLUR_KERNEL_SIZE"], 0)
 
-    # Calculate the new bounding box size
-    cos = np.abs(M[0, 0])
-    sin = np.abs(M[0, 1])
-    new_w = int((h * sin) + (w * cos))
-    new_h = int((h * cos) + (w * sin))
-
-    # Adjust the rotation matrix to account for translation
-    M[0, 2] += (new_w / 2) - center[0]
-    M[1, 2] += (new_h / 2) - center[1]
-
-    # Perform the actual rotation and return the image
-    return cv2.warpAffine(
-        image, M, (new_w, new_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+    edges = cv2.Canny(
+        blurred_image, params["CANNY_THRESHOLD_1"], params["CANNY_THRESHOLD_2"]
     )
 
-
-def process_and_correct_image(image_path1, image_path2):
-    """
-    Main pipeline: Loads an image, detects the horizon, and corrects the roll.
-    """
-    original_image1 = cv2.imread(image_path1)
-    original_image2 = cv2.imread(image_path2)
-
-    original_image = cv2.hconcat([original_image2, original_image1])
-    if original_image is None:
-        print(f"Error: Could not load image at {image_path1} or {image_path2}")
-        return
-
-    # --- 1. PRE-PROCESSING ---
-    gray_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
-    blurred_image = cv2.GaussianBlur(gray_image, BLUR_KERNEL_SIZE, 0)
-
-    # --- 2. CANNY EDGE DETECTION ---
-    edges = cv2.Canny(blurred_image, CANNY_THRESHOLD_1, CANNY_THRESHOLD_2)
-
-    # --- 3. CREATE AND APPLY REGION OF INTEREST (ROI) MASK ---
     h, w = edges.shape
     mask = np.zeros_like(edges)
-
-    # Define the vertices of the trapezoidal ROI
-    roi_top_y = int(h * ROI_TOP_IGNORE_PERCENT)
-    roi_bottom_y = int(h * (1 - ROI_BOTTOM_IGNORE_PERCENT))
+    roi_top_y = int(h * params["ROI_TOP_IGNORE_PERCENT"])
+    roi_bottom_y = int(h * (1 - params["ROI_BOTTOM_IGNORE_PERCENT"]))
+    roi_left_x = int(w * params["ROI_LEFT_IGNORE_PERCENT"])
+    roi_right_x = int(w * (1 - params["ROI_RIGHT_IGNORE_PERCENT"]))
     roi_corners = np.array(
-        [[(0, roi_top_y), (w, roi_top_y), (w, roi_bottom_y), (0, roi_bottom_y)]],
+        [
+            [
+                (roi_left_x, roi_top_y),
+                (roi_right_x, roi_top_y),
+                (roi_right_x, roi_bottom_y),
+                (roi_left_x, roi_bottom_y),
+            ]
+        ],
         dtype=np.int32,
     )
-
-    # Fill the ROI polygon with white
     cv2.fillPoly(mask, roi_corners, 255)
     masked_edges = cv2.bitwise_and(edges, mask)
 
-    # --- 4. HOUGH LINE TRANSFORM on the masked edges ---
     lines = cv2.HoughLinesP(
         masked_edges,
-        1,  # rho resolution (1 pixel)
-        np.pi / 180,  # theta resolution (1 degree)
-        threshold=HOUGH_THRESHOLD,
-        minLineLength=HOUGH_MIN_LINE_LENGTH,
-        maxLineGap=HOUGH_MAX_LINE_GAP,
-    )
-
-    # --- 5. CALCULATE THE FINAL HORIZON ANGLE ---
-    roll_angle = calculate_weighted_horizon_angle(lines)
-    print(f"Horizon detected! Estimated Roll Angle: {roll_angle:.2f} degrees")
-
-    # --- 6. CORRECT THE IMAGE ---
-    # The correction angle is the negative of the detected roll angle
-    corrected_image = rotate_and_resize(original_image, -roll_angle)
-
-    # --- 7. VISUALIZATION (for debugging) ---
-    debug_image = original_image.copy()
-    # Draw the ROI
-    cv2.polylines(
-        debug_image, [roi_corners], isClosed=True, color=(0, 0, 255), thickness=2
-    )
-    # Draw all detected lines (within the ROI) in blue
-    if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            cv2.line(debug_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
-
-    # Draw the final calculated horizon line in green
-    center_y = h // 2
-    length = w
-    angle_rad = math.radians(roll_angle)
-    x1 = int((w / 2) - (length / 2) * math.cos(angle_rad))
-    y1 = int(center_y - (length / 2) * math.sin(angle_rad))
-    x2 = int((w / 2) + (length / 2) * math.cos(angle_rad))
-    y2 = int(center_y + (length / 2) * math.sin(angle_rad))
-    cv2.line(debug_image, (x1, y1), (x2, y2), (0, 255, 0), 3, cv2.LINE_AA)
-
-    cv2.putText(
-        debug_image,
-        f"Angle: {roll_angle:.2f} deg",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
         1,
-        (0, 255, 0),
-        2,
+        np.pi / 180,
+        threshold=params["HOUGH_THRESHOLD"],
+        minLineLength=params["HOUGH_MIN_LINE_LENGTH"],
+        maxLineGap=params["HOUGH_MAX_LINE_GAP"],
     )
 
-    # Display results
-    cv2.imshow("Original Image", original_image)
-    cv2.imshow("Masked Edges within ROI", masked_edges)
-    cv2.imshow("Horizon Detection (Debug)", debug_image)
-    cv2.imshow("Corrected Image", corrected_image)
-
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    return calculate_weighted_horizon_angle(lines, params)
 
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    # Replace this with the path to your image
-    # Use an image of an ocean with islands on the horizon for best results.
-    TEST_IMAGE_PATH1 = (
-        "images/dataset1/undistorted_cam1_right/undistorted_cam1_0801_right.jpg"
-    )
-    TEST_IMAGE_PATH2 = (
-        "images/dataset1/undistorted_cam1_left/undistorted_cam1_0801_left.jpg"
-    )
+    param_grid = {
+        "CANNY_THRESHOLD_1": [50, 75],
+        "CANNY_THRESHOLD_2": [150],
+        "BLUR_KERNEL_SIZE": [(3, 3), (5, 5), (7, 7)],  # Must be a tuple of odd numbers
+        "HOUGH_THRESHOLD": [30, 50, 70],
+        "HOUGH_MIN_LINE_LENGTH": [30, 50, 70],
+        "HOUGH_MAX_LINE_GAP": [10, 20],
+        "ROI_TOP_IGNORE_PERCENT": [0.40],
+        "ROI_BOTTOM_IGNORE_PERCENT": [0.45],
+        "ROI_LEFT_IGNORE_PERCENT": [0.4],
+        "ROI_RIGHT_IGNORE_PERCENT": [0.4],
+        "HORIZON_ANGLE_RANGE": [(-15.0, 15.0)],
+    }
 
-    process_and_correct_image(TEST_IMAGE_PATH1, image_path2=TEST_IMAGE_PATH2)
+    csv_path = "AI/roll3.csv"
+    image_path_template = "images/dataset3/distorted_images_cam1/distorted_cam1_{}.jpg"
+
+    # Create all possible combinations of parameters
+    keys, values = zip(*param_grid.items())
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+    total_combinations = len(param_combinations)
+    print(f"--- Starting Grid Search ---")
+    print(f"Found {total_combinations} parameter combinations to test.")
+
+    try:
+        ground_truth_df = pd.read_csv(csv_path)
+        print(f"Loaded {len(ground_truth_df)} ground truth entries from '{csv_path}'.")
+    except FileNotFoundError:
+        print(f"FATAL: The CSV file was not found at '{csv_path}'")
+        exit()
+
+    grid_search_results = []
+    start_time = time.time()
+
+    for i, params in enumerate(param_combinations):
+        print(f"\n[{i + 1}/{total_combinations}] Testing combination: {params}")
+
+        errors = []
+        for index, row in ground_truth_df.iterrows():
+            image_num_str = str(int(row["image"])).zfill(4)
+            ground_truth_angle = float(row["roll"])
+            image_path = image_path_template.format(image_num_str)
+
+            predicted_angle = get_roll_angle_for_image(image_path, params)
+
+            if predicted_angle is not None:
+                error = abs(predicted_angle - ground_truth_angle)
+                errors.append(error)
+
+        # Calculate MAE for this parameter combination
+        if errors:
+            mean_absolute_error = sum(errors) / len(errors)
+            print(f"--> MAE for this combination: {mean_absolute_error:.4f} degrees")
+            grid_search_results.append({"mae": mean_absolute_error, "params": params})
+        else:
+            print("--> No images could be processed with this combination. Skipping.")
+
+    end_time = time.time()
+    print(f"\n--- Grid Search Finished in {end_time - start_time:.2f} seconds ---")
+
+    if grid_search_results:
+        # Sort results by error in ascending order
+        sorted_results = sorted(grid_search_results, key=lambda x: x["mae"])
+
+        best_result = sorted_results[0]
+
+        print("\n--- Best Performing Parameters ---")
+        print(f"Lowest Mean Absolute Error: {best_result['mae']:.4f} degrees")
+        print("Parameters:")
+        for key, value in best_result["params"].items():
+            print(f"  {key}: {value}")
+
+        print("\n--- Top 5 Results ---")
+        for i, result in enumerate(sorted_results[:5]):
+            print(f"{i + 1}. MAE: {result['mae']:.4f} | Params: {result['params']}")
+    else:
+        print("Grid search completed, but no valid results were found.")

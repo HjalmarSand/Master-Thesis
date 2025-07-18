@@ -9,8 +9,8 @@ import pandas as pd
 
 import constants
 
-GPS_CSV_PATH = "images/dataset1/gps_interpolated_with_orientation.csv"  # Path to the CSV file with GPS data
-OUTPUT_DIR = "trajectory_analysis_output"  # where to save plots
+GPS_CSV_PATH = "images/dataset1/gps_interpolated_with_orientation.csv"
+OUTPUT_DIR = "trajectory_analysis_output"
 
 
 def calculate_distance_easting_northing(e1, n1, e2, n2):
