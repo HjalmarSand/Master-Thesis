@@ -15,7 +15,7 @@ LIDAR_DATA_DIR = PROJECT_ROOT / "DSM_Data" / "cleaned_laser"
 
 LIDAR_SKYLINE_RESOLUTION = (
     64 * 24
-)  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) / this factor
+)  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) divided by this factor
 
 LIDAR_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM" / "lidar_skyline"
 
@@ -27,6 +27,10 @@ OBSERVER_GRID_PATH = (
 
 PANORAMA_IMG_WIDTH = 5120
 PANORAMA_IMG_HEIGHT = 960
+
+SEARCH_RADIUS = 2000
+ANGLE_STEP = 1 / PANORAMA_IMG_WIDTH * LIDAR_SKYLINE_RESOLUTION
+MIN_DISTANCE = 10
 
 # Image dimensions (found when running split_stacked_images.py)
 SPLIT_IMG_WIDTH = 1280
