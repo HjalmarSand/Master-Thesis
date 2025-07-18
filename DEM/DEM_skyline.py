@@ -1,8 +1,12 @@
 import json
 import os
+import sys
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import List, Tuple
+
+project_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root))
 
 import matplotlib.pyplot as plt
 import numpy as np

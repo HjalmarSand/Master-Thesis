@@ -107,7 +107,7 @@ if __name__ == "__main__":
     axes[0].set_xlabel("Easting")
     axes[0].set_ylabel("Northing")
     axes[0].grid(True, linestyle="--")
-    # axes[0].axis("equal")
+    axes[0].axis("equal")
     axes[0].legend()
 
     # Plot 2: Orientation Comparison

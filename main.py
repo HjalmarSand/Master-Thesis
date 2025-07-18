@@ -762,7 +762,7 @@ def run_panorama_stitching():
         cam1_right_dir = selected_dir / "undistorted_cam1_right"
         cam2_left_dir = selected_dir / "undistorted_cam2_left"
         cam2_right_dir = selected_dir / "undistorted_cam2_right"
-        output_panorama_dir = selected_dir / "panoramas"
+        output_panorama_dir = selected_dir
 
         if selected_dir == "dataset1":
             manual_rotation_offset_deg = 32  # TODO: Verify with better calculations
@@ -779,7 +779,6 @@ def run_panorama_stitching():
             output_dir=output_panorama_dir,
             orientation_csv_path=orientation_csv_path,
             manual_rotation_offset_deg=manual_rotation_offset_deg,
-            use_edge_detection=False,
         )
 
         if exit_code == 0:
