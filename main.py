@@ -1,12 +1,16 @@
 import argparse
+import gc
 import sys
 import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import matplotlib
+from matplotlib import pyplot as plt
 
 matplotlib.use("TkAgg")
+import zipfile
+
 import numpy as np
 import pandas as pd
 import torch
@@ -16,14 +20,20 @@ from tqdm import tqdm
 
 import constants
 from AI import evaluate_model, roll_angle_estimator
-from AI.roll_angle_estimator import RollEstimatorCNN
+from AI.roll_angle_estimator import (
+    RollEstimatorCNN,
+    run_kfold_cross_validation,
+    visualize_model_features,
+)
 from DEM.DEM_skyline import (
+    calculate_skyline_similarity,
     check_file_relevance_from_json,
     create_and_save_grid,
     find_laz_files,
     generate_skyline_for_single_point,
     generate_skyline_mask_array,
     init_worker,
+    process_tile_for_multiple_viewpoints,
     process_viewpoint_and_file,
     visualize_comparison,
     visualize_single_skyline,
@@ -187,31 +197,42 @@ def run_fisheye_segmentation():
 
 def run_roll_angle_training():
     """
-    Stage 3: Train a CNN to estimate roll angle from segmented fisheye images.
+    Stage 3: Train a single, unified CNN model on a pre-defined list of datasets.
     """
     print_stage_header(
         3,
-        "ROLL ANGLE ESTIMATOR TRAINING",
-        "Training a CNN on annotated, segmented fisheye images.",
+        "UNIFIED ROLL ANGLE ESTIMATOR TRAINING",
+        "Training one model on a combined dataset for better generalization.",
     )
-
     try:
         project_root = Path(__file__).parent
-
-        # Define the paths for the training data and model output
         annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
-        model_save_path = project_root / "AI" / "models" / "roll_estimator_v1.pth"
+        images_root = Path(constants.IMAGES_DIR)
 
         if not annotation_csv_path.is_file():
             print(f"ERROR: Annotation file not found at '{annotation_csv_path}'")
             return False
 
-        # Call the main training function from our new file
+        # Add the paths to all the image folders you want to train on.
+        training_folders = [
+            # images_root / "dataset1" / "distorted_images_cam1",
+            images_root / "dataset2" / "distorted_images_cam1",
+            images_root / "dataset3" / "distorted_images_cam1",
+        ]
+
+        # Filter out any folders that don't actually exist
+        valid_training_folders = [p for p in training_folders if p.is_dir()]
+        if not valid_training_folders:
+            print("None of the specified training folders exist. Aborting.")
+            return False
+
+        model_save_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+
         exit_code = roll_angle_estimator.train_roll_estimator(
-            images_root_dir=constants.IMAGES_DIR,
+            image_dirs=valid_training_folders,  # Pass the list of folders
             annotation_csv=annotation_csv_path,
             model_save_path=model_save_path,
-            num_epochs=30,  # TODO: Experiment with this
+            num_epochs=120,
         )
 
         return exit_code == 0
@@ -224,33 +245,84 @@ def run_roll_angle_training():
         return False
 
 
-def run_roll_model_evaluation():
+def run_roll_angle_cross_validation():
     """
-    Stage 4: Evaluate the trained roll angle estimation model on the validation set.
+    Stage 3b: Run K-Fold Cross-Validation on the Roll Angle Estimator.
     """
     print_stage_header(
-        4,
-        "ROLL ANGLE MODEL EVALUATION",
-        "Calculating error metrics and generating plots for the trained model.",
+        "3b",
+        "ROLL ANGLE ESTIMATOR K-FOLD CROSS-VALIDATION",
+        "Rigorously evaluating model performance across multiple data splits.",
     )
-
     try:
         project_root = Path(__file__).parent
-
-        # Define the paths for the data, trained model, and output plot
-        images_root_dir = project_root / "images"
         annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
-        model_path = project_root / "AI" / "models" / "roll_estimator_v1.pth"
-        plot_save_path = (
-            project_root / "AI" / "evaluation_results" / "true_vs_predicted.png"
-        )
+        images_root = Path(constants.IMAGES_DIR)
 
-        if not model_path.is_file():
-            print(f"ERROR: Trained model not found at '{model_path}'")
-            print("       Please run the training stage first.")
+        if not annotation_csv_path.is_file():
+            print(f"ERROR: Annotation file not found at '{annotation_csv_path}'")
             return False
 
-        # The transform must be identical to the one used during training
+        # CONFIGURE YOUR TRAINING DATA HERE
+        training_folders = [
+            # images_root / "dataset1" / "distorted_images_cam1",
+            images_root / "dataset2" / "distorted_images_cam1",
+            images_root / "dataset3" / "distorted_images_cam1",
+        ]
+        valid_training_folders = [p for p in training_folders if p.is_dir()]
+        if not valid_training_folders:
+            print("None of the specified training folders exist. Aborting.")
+            return False
+
+        # Call the helper function that contains all the complex logic
+        exit_code = run_kfold_cross_validation(
+            image_dirs=valid_training_folders,
+            annotation_csv=annotation_csv_path,
+            k_folds=5,
+            num_epochs=15,
+        )
+
+        return exit_code == 0
+
+    except Exception as e:
+        print(f"An error occurred during cross-validation: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_roll_model_evaluation():
+    """
+    Stage 4: Evaluate the combined roll angle model on the validation set
+    from the full training data.
+    """
+    print_stage_header(4, "ROLL ANGLE MODEL EVALUATION")
+    try:
+        project_root = Path(__file__).parent
+        annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
+        images_root = Path(constants.IMAGES_DIR)
+
+        model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+        if not model_path.is_file():
+            print(
+                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+            )
+            return False
+
+        # Use the SAME list of folders that the model was trained on
+        training_folders = [
+            # images_root / "dataset1" / "distorted_images_cam1",
+            images_root / "dataset2" / "distorted_images_cam1",
+            images_root / "dataset3" / "distorted_images_cam1",
+        ]
+
+        valid_folders = [p for p in training_folders if p.is_dir()]
+        if not valid_folders:
+            print("None of the specified evaluation folders exist.")
+            return False
+
+        # This must be identical to the transform used during training
         transform = transforms.Compose(
             [
                 transforms.Resize(256),
@@ -259,15 +331,19 @@ def run_roll_model_evaluation():
                 transforms.Normalize(mean=[0.5], std=[0.5]),
             ]
         )
+        # END OF BLOCK
+
+        plot_save_path = (
+            project_root / "AI" / "evaluation_results" / "evaluation_combined_model.png"
+        )
 
         exit_code = evaluate_model.run_evaluation(
-            images_root_dir=images_root_dir,
+            image_dirs=valid_folders,
             annotation_csv=annotation_csv_path,
             model_path=model_path,
             plot_save_path=plot_save_path,
-            transform=transform,
+            transform=transform,  # <<< PASS THE TRANSFORM HERE
         )
-
         return exit_code == 0
 
     except Exception as e:
@@ -280,46 +356,39 @@ def run_roll_model_evaluation():
 
 def run_interactive_roll_prediction():
     """
-    Stage 5: Manually test the roll angle model on a single, hardcoded image path.
+    Stage 5: Manually test the combined roll angle model on a single image.
     """
-    print_stage_header(
-        5,
-        "SINGLE IMAGE ROLL PREDICTION",
-        "Provide a path inside the function to get a roll angle prediction.",
-    )
-
+    print_stage_header(5, "SINGLE IMAGE ROLL PREDICTION")
     try:
-        image_to_test_path = (
-            "images/dataset2/segmented_fisheye_cam1/binary_distorted_cam1_0447.png"
-        )
-
         project_root = Path(__file__).parent
-        model_path = project_root / "AI" / "models" / "roll_estimator_v1.pth"
-        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Check if the model exists
+        # Path to the single combined model
+        model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
         if not model_path.is_file():
-            print(f"ERROR: Trained model not found at '{model_path}'")
-            print("       Please run the training stage first.")
-            return False
-
-        # Check if the test image exists
-        image_path = Path(image_to_test_path)
-        if not image_path.is_file():
-            print(f"ERROR: Test image not found at '{image_path}'")
             print(
-                "       Please update the 'image_to_test_path' variable in the script."
+                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
             )
             return False
 
-        # 1. Load the model structure and weights
+        # CONFIGURE THE TEST IMAGE HERE
+        # Define the relative path to the image you want to test.
+        image_path = (
+            project_root
+            / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
+        )
+        # END OF CONFIGURATION
+
+        if not image_path.is_file():
+            print(f"ERROR: Test image not found at '{image_path}'")
+            return False
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         model = RollEstimatorCNN()
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.to(device)
-        model.eval()  # Set to evaluation mode
-        print(f"Loaded trained model on {device}.")
+        model.eval()
+        print(f"Loaded trained model '{model_path.name}' on {device}.")
 
-        # 2. Define the exact same transformations used during training
         transform = transforms.Compose(
             [
                 transforms.Resize(256),
@@ -330,23 +399,77 @@ def run_interactive_roll_prediction():
         )
 
         print(f"Processing image: {image_path.name}")
-
-        # 3. Load and process the single image
         with Image.open(image_path).convert("L") as img:
-            image_tensor = transform(img).unsqueeze(0).to(device)
+            image_tensor = transform(img)
 
-        # 4. Get the prediction
+        # Apply the focus mask
+        _, height, width = image_tensor.shape
+        center_x, center_y = width // 2, height // 2
+        Y, X = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
+        scale = width / 2.5
+        dist_from_center = torch.sqrt(
+            ((X - center_x) ** 2 + (Y - center_y) ** 2).float()
+        )
+        focus_mask = torch.exp(-(dist_from_center**2) / (2 * scale**2))
+        image_tensor = image_tensor * focus_mask.unsqueeze(0)
+
+        # Add batch dimension and send to device
+        image_tensor = image_tensor.unsqueeze(0).to(device)
+
         with torch.no_grad():
             predicted_angle = model(image_tensor).item()
 
-        # 5. Display the result
         print("\nPrediction Result")
         print(f"Predicted Roll Angle: {predicted_angle:.2f} degrees")
-
         return True
 
     except Exception as e:
         print(f"An error occurred during prediction: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_feature_visualization():
+    """
+    Stage 6: Visualize the features learned by the combined Roll Angle Estimator CNN.
+    """
+    print_stage_header(6, "CNN FEATURE VISUALIZATION")
+    try:
+        project_root = Path(__file__).parent
+
+        # Path to the single combined model
+        model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+        if not model_path.is_file():
+            print(
+                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+            )
+            return False
+
+        # CONFIGURE THE VISUALIZATION IMAGE HERE
+        # Define the relative path to the image you want to visualize.
+        sample_image_path = (
+            project_root
+            / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
+        )
+        # END OF CONFIGURATION
+
+        if not sample_image_path.is_file():
+            print(f"ERROR: Sample image not found at '{sample_image_path}'.")
+            return False
+
+        output_dir = project_root / "AI" / "evaluation_results"
+
+        visualize_model_features(
+            model_path=model_path,
+            image_path=sample_image_path,
+            output_dir=output_dir,
+        )
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during feature visualization: {e}")
         import traceback
 
         traceback.print_exc()
@@ -372,12 +495,12 @@ def run_interactive_roll_prediction():
 
 def run_fisheye_undistortion():
     """
-    Stage 6: Undistort fisheye images for all datasets.
+    Stage 7: Undistort fisheye images for all datasets.
     - Finds each dataset folder in the images directory.
     - Applies roll and horizon bend correction and a symmetrical vertical pitch correction to both cameras.
     """
     print_stage_header(
-        6,
+        7,
         "FISHEYE UNDISTORTION",
         "Applying camera-specific alignment parameters to a selected dataset.",
     )
@@ -477,7 +600,7 @@ def run_fisheye_undistortion():
         )
 
         print(
-            f"\n✅ Fisheye undistortion for '{selected_dir.name}' finished successfully!"
+            f"\nFisheye undistortion for '{selected_dir.name}' finished successfully!"
         )
         return True
 
@@ -491,10 +614,10 @@ def run_fisheye_undistortion():
 
 def run_gps_orientation_processing():
     """
-    Stage 7: Interactively select a dataset and process its GPS data to calculate orientation.
+    Stage 8: Interactively select a dataset and process its GPS data to calculate orientation.
     """
     print_stage_header(
-        7,
+        8,
         "GPS & ORIENTATION PROCESSING",
         "Calculates orientation from GPS data for a selected dataset.",
     )
@@ -561,7 +684,7 @@ def run_gps_orientation_processing():
         )
 
         print(
-            f"\n✅ GPS orientation processing for '{selected_source_dir.name}' complete."
+            f"\nGPS orientation processing for '{selected_source_dir.name}' complete."
         )
         return True
 
@@ -578,10 +701,10 @@ def run_gps_orientation_processing():
 
 def run_panorama_stitching():
     """
-    Stage 8: Interactively select a dataset and stitch its four rectilinear views into panoramas.
+    Stage 9: Interactively select a dataset and stitch its four rectilinear views into panoramas.
     """
     print_stage_header(
-        8,
+        9,
         "PANORAMA STITCHING",
         "Combining four views into a single panoramic image per timestamp for a selected dataset",
     )
@@ -642,10 +765,10 @@ def run_panorama_stitching():
         output_panorama_dir = selected_dir
 
         if selected_dir == "dataset1":
-            manual_rotation_offset_deg = 16  # TODO: Verify with better calculations
+            manual_rotation_offset_deg = 32  # TODO: Verify with better calculations
         else:
             manual_rotation_offset_deg = (
-                16  # TODO: Change for the camera setup in dataset 2 and 3
+                36  # TODO: Change for the camera setup in dataset 2 and 3
             )
 
         exit_code = build_panoramas(
@@ -716,11 +839,11 @@ def run_panorama_stitching():
 # This method instead of SAM uses segformer-b5
 def run_skyline_segmentation():
     """
-    Stage 9: Interactively select a dataset and use segformer-b5 to create
+    Stage 10: Interactively select a dataset and use segformer-b5 to create
     binary skyline masks from its panoramas.
     """
     print_stage_header(
-        9,
+        10,
         "SKYLINE SEGMENTATION",
         "Generating binary sky masks using segformer-b5 for a selected dataset",
     )
@@ -780,7 +903,7 @@ def run_skyline_segmentation():
 
         if exit_code == 0:
             print(
-                f"\n✅ Skyline segmentation completed successfully for {selected_dir.name}!"
+                f"\nSkyline segmentation completed successfully for {selected_dir.name}!"
             )
             return True
         else:
@@ -797,10 +920,10 @@ def run_skyline_segmentation():
 
 def build_colmap_databases(force_rebuild: bool = False):
     """
-    Stage 10: Build COLMAP databases for image retrieval for each dataset.
+    Stage 11: Build COLMAP databases for image retrieval for each dataset.
     """
     print_stage_header(
-        10, "BUILD COLMAP DATABASES", "Building feature databases for each dataset"
+        11, "BUILD COLMAP DATABASES", "Building feature databases for each dataset"
     )
 
     try:
@@ -869,10 +992,10 @@ def build_colmap_databases(force_rebuild: bool = False):
 
 def analyze_retrieval_accuracy(sample_rate: int = 10):
     """
-    Stage 11: Analyze image retrieval accuracy for each dataset.
+    Stage 12: Analyze image retrieval accuracy for each dataset.
     """
     print_stage_header(
-        11, "RETRIEVAL ACCURACY ANALYSIS", "Analyzing location errors for each dataset"
+        12, "RETRIEVAL ACCURACY ANALYSIS", "Analyzing location errors for each dataset"
     )
 
     output_dir = Path("output")
@@ -1049,16 +1172,16 @@ def analyze_retrieval_accuracy(sample_rate: int = 10):
 
 def run_single_point_validation():
     """
-    Stage 12: Generate a DEM skyline for a single, user-selected coordinate
+    Stage 13: Validate the TILE-CENTRIC logic for a single, user-selected coordinate
     and compare it visually against the real segmented panorama.
     """
     print_stage_header(
-        12,
-        "SINGLE-POINT VALIDATION",
-        "Visually comparing a single DEM skyline against a real panorama.",
+        13,
+        "SINGLE-POINT VALIDATION (TILE-CENTRIC LOGIC)",
+        "Testing the optimized data loading architecture on a single point.",
     )
     try:
-        # 1. Interactively select a dataset
+        # 1. Select a single viewpoint
         datasets_root_dir = Path(constants.IMAGES_DIR)
         dataset_dirs = sorted(
             [
@@ -1072,36 +1195,97 @@ def run_single_point_validation():
             print("No datasets with 'gps_interpolated_with_orientation.csv' found.")
             return False
 
-        selected_dir = dataset_dirs[0]
-        print(f"Using dataset: {selected_dir.name}")
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to validate:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
 
-        # 2. Select a specific data point from the CSV
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print(
+                        f"\nInvalid input. Please enter a number between 0 and {len(dataset_dirs) - 1}."
+                    )
+            except ValueError:
+                print("\nInvalid input. Please enter a number.")
+
+        print(f"Using dataset: {selected_dir.name}")
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
-
         print("\nPlease select a data point to validate from the table below:")
-        print(gps_df.head(10).to_string())  # Show first 10 options
+        print(gps_df.head(10).to_string())
         choice_str = input(f"Enter the index (0-{len(gps_df) - 1}): ")
         choice_idx = int(choice_str)
-
         selected_point = gps_df.iloc[choice_idx]
         easting, northing = selected_point["easting"], selected_point["northing"]
-        original_filename = selected_point["filename"]  # e.g., '0801.jpg'
-        viewpoint_coords = (easting, northing, 1.5)  # Assume 1.5m height
+        viewpoint_coords = (easting, northing, 1.5)
+        point_id = f"validation_vp_{easting:.0f}_{northing:.0f}"
 
-        # 3. Generate the DEM skyline for this single point
-        dem_mask = generate_skyline_for_single_point(viewpoint_coords)
+        # 2. Find relevant tiles for the SINGLE viewpoint
+        print("\nFinding relevant LAZ tiles for the selected point...")
+        all_laz_files = find_laz_files()
+        relevant_files = [
+            f
+            for f in all_laz_files
+            if check_file_relevance_from_json(f, viewpoint_coords)
+        ]
+        if not relevant_files:
+            print("No relevant LAZ files found for this coordinate.")
+            return False
+        print(f"Found {len(relevant_files)} relevant LAZ files.")
 
-        # 4. Load the corresponding real segmented panorama
-        image_number = Path(original_filename).stem  # '0801'
+        # 3. Create tasks for the TILE-CENTRIC worker
+        tasks = [
+            (laz_file, [(point_id, viewpoint_coords)]) for laz_file in relevant_files
+        ]
+        num_processes = max(1, cpu_count() - 2)
+
+        # 4. Run workers and aggregate results
+        print(f"Distributing {len(tasks)} tiles across {num_processes} CPU cores...")
+        num_bins = int(360 / constants.ANGLE_STEP)
+        aggregated_elevations = np.full(num_bins, 0.0)
+
+        with Pool(processes=num_processes) as pool:
+            iterator = pool.imap_unordered(process_tile_for_multiple_viewpoints, tasks)
+            for tile_results in tqdm(
+                iterator, total=len(tasks), desc="Processing LAZ tiles"
+            ):
+                # tile_results is a list like [(point_id, partial_skyline)]
+                for _, partial_skyline in tile_results:
+                    aggregated_elevations = np.maximum(
+                        aggregated_elevations, partial_skyline
+                    )
+
+        # 5. Generate final mask and compare
+        print("Aggregation complete. Generating final mask...")
+        angles = np.linspace(0, 360, num_bins, endpoint=False)
+        dem_mask = generate_skyline_mask_array(
+            angles,
+            aggregated_elevations,
+            constants.PANORAMA_IMG_WIDTH,
+            constants.PANORAMA_IMG_HEIGHT,
+        )
+
+        original_filename = selected_point["filename"]
+        image_number = Path(original_filename).stem
         real_mask_name = f"binary_panorama_{image_number}.png"
         real_mask_path = selected_dir / "binary_panorama" / real_mask_name
 
+        if not real_mask_path.exists():
+            print(f"Real segmented panorama not found at: {real_mask_path}")
+            return False
         real_mask = np.array(Image.open(real_mask_path))
 
-        # 5. Display the side-by-side comparison
-        point_id = f"{easting:.0f}_{northing:.0f}"
-        visualize_comparison(dem_mask, real_mask, point_id, real_mask_name)
+        similarity_score = calculate_skyline_similarity(dem_mask, real_mask)
+        print(f"Calculated Similarity Score (IoU): {similarity_score:.2%}")
+        visualize_comparison(
+            dem_mask, real_mask, point_id, real_mask_name, similarity_score
+        )
 
         return True
 
@@ -1117,156 +1301,202 @@ def run_single_point_validation():
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
-# In main.py, replace the whole function
-
-
 def run_lidar_skyline_generation():
     """
-    Stage 13: Generate a LiDAR skyline database using a resilient, batch-based architecture.
+    Stage 14: Generate a LiDAR skyline database with a correct, memory-safe,
+    and resilient architecture.
     """
-    print_stage_header(13, "LIDAR SKYLINE MASK GENERATION (BATCHED & RESILIENT)")
+    print_stage_header(14, "LIDAR SKYLINE MASK GENERATION (MEMORY-SAFE)")
 
     try:
-        BATCH_SIZE = 100  # Process 100 viewpoints per batch
-        project_root = Path(__file__).resolve().parent
-        output_dir = project_root / "databases" / "dem_database"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / "skyline_masks.npz"
+        MAX_CONCURRENT_LAZ_FILES = (
+            10  # Cap the number of LAZ files processed in parallel
+        )
 
+        project_root = Path(__file__).resolve().parent
+        db_dir = project_root / "databases" / "dem_database"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        elevations_path = db_dir / "skyline_elevations.npz"
+        final_masks_path = db_dir / "skyline_masks.npz"
+
+        print_separator("PART A: Aggregating Elevation Data")
+
+        # 1. Load ONLY the list of completed IDs to resume
+        processed_point_ids = set()
+        if elevations_path.exists():
+            with np.load(elevations_path) as existing_data:
+                processed_point_ids = set(existing_data.keys())
+            print(f"Loaded {len(processed_point_ids)} existing points to resume.")
+
+        # 2. Map LAZ files to viewpoints that STILL NEED to be processed
         grid_df = create_and_save_grid(
             start_coords=(611597.725, 6458055.924),
             end_coords=(614547.264, 6463806.450),
             spacing_meters=25.0,
         )
-        # Create a lookup from point_id to coordinates
-        grid_df["point_id"] = grid_df.apply(
-            lambda row: f"dem_vp_{row['easting']:.0f}_{row['northing']:.0f}", axis=1
-        )
-        coord_lookup = grid_df.set_index("point_id")[["easting", "northing"]].to_dict(
-            "index"
-        )
-        all_point_ids = grid_df["point_id"].tolist()
+        all_coords = list(zip(grid_df["easting"], grid_df["northing"]))
         all_laz_files = find_laz_files()
 
-        # 2. RESUME LOGIC
-        processed_ids = set()
-        if output_path.exists():
-            with np.load(output_path) as existing_data:
-                processed_ids = set(existing_data.keys())
+        print("\nMapping LAZ files to remaining viewpoints")
+        tile_to_viewpoints_map = {str(f): [] for f in all_laz_files}
+        for x, y in tqdm(all_coords, desc="Planning tasks"):
+            point_id = f"dem_vp_{x:.0f}_{y:.0f}"
+            if point_id in processed_point_ids:
+                continue
+            viewpoint_coords = (x, y, 1.5)
+            for laz_file in all_laz_files:
+                if check_file_relevance_from_json(laz_file, viewpoint_coords):
+                    tile_to_viewpoints_map[str(laz_file)].append(
+                        (point_id, viewpoint_coords)
+                    )
+
+        relevant_laz_files = [
+            Path(p) for p, vps in tile_to_viewpoints_map.items() if vps
+        ]
+        if not relevant_laz_files:
+            print("\nAll viewpoints have already been processed.")
+        else:
+            # 3. Create batches OF LAZ FILES
+            laz_batches = [
+                relevant_laz_files[i : i + MAX_CONCURRENT_LAZ_FILES]
+                for i in range(0, len(relevant_laz_files), MAX_CONCURRENT_LAZ_FILES)
+            ]
+            num_processes = max(1, cpu_count() - 6)
+
+            # 4. Main batch processing loop
+            for i, laz_batch in enumerate(laz_batches):
+                print_separator(
+                    f"Processing LAZ File Batch {i + 1} / {len(laz_batches)}"
+                )
+
+                # Create one coarse-grained task per LAZ file in the batch
+                batch_tasks = [
+                    (laz_path, tile_to_viewpoints_map[str(laz_path)])
+                    for laz_path in laz_batch
+                ]
+
+                print(f"Processing {len(batch_tasks)} LAZ files in this batch...")
+
+                batch_skyline_data = {}
+                with Pool(processes=num_processes) as pool:
+                    iterator = pool.imap_unordered(
+                        process_tile_for_multiple_viewpoints, batch_tasks
+                    )
+                    with tqdm(total=len(batch_tasks), desc="Processing Tiles") as pbar:
+                        for tile_results in iterator:
+                            for point_id, partial_skyline in tile_results:
+                                if point_id not in batch_skyline_data:
+                                    batch_skyline_data[point_id] = partial_skyline
+                                else:
+                                    batch_skyline_data[point_id] = np.maximum(
+                                        batch_skyline_data[point_id], partial_skyline
+                                    )
+
+                            # Update the progress bar after processing each tile
+                            pbar.update(1)
+                            # Display the number of unique points aggregated in THIS batch so far
+                            pbar.set_postfix_str(
+                                f"New Points in Batch: {len(batch_skyline_data)}"
+                            )
+
+                # 5. Merge and Save Incrementally
+                if not batch_skyline_data:
+                    print("No results generated in this batch.")
+                    continue
+
+                print(
+                    f"\nMerging {len(batch_skyline_data)} new/updated points into database..."
+                )
+                existing_data = {}
+                if elevations_path.exists():
+                    with np.load(elevations_path, allow_pickle=True) as data:
+                        existing_data = dict(data)
+
+                for point_id, new_skyline in batch_skyline_data.items():
+                    if point_id not in existing_data:
+                        existing_data[point_id] = new_skyline
+                    else:
+                        existing_data[point_id] = np.maximum(
+                            existing_data[point_id], new_skyline
+                        )
+
+                np.savez_compressed(elevations_path, **existing_data)
+                print("Progress saved successfully.")
+                gc.collect()
+
+        print_separator("PART B: Generating Final Masks in Batches")
+
+        if not elevations_path.exists():
+            print("No elevation data found to process. Exiting.")
+            return True
+
+        # Create a dedicated directory for the mask batches
+        mask_batches_dir = db_dir / "mask_batches"
+        mask_batches_dir.mkdir(exist_ok=True)
+
+        with np.load(elevations_path, allow_pickle=True) as elevation_data:
+            all_point_ids = list(elevation_data.keys())
+
+            # Find which batches still need to be created
+            point_ids_to_process = all_point_ids
             print(
-                f"Found existing database with {len(processed_ids)} processed points."
+                f"Preparing to generate masks for {len(point_ids_to_process)} points..."
             )
 
-        point_ids_to_process = [
-            pid for pid in all_point_ids if pid not in processed_ids
-        ]
-        if not point_ids_to_process:
-            print(
-                "\n✅ All points have already been processed. Database is up to date."
-            )
+            MASK_BATCH_SIZE = 500
+            id_batches = [
+                point_ids_to_process[i : i + MASK_BATCH_SIZE]
+                for i in range(0, len(point_ids_to_process), MASK_BATCH_SIZE)
+            ]
+
+            for i, id_batch in enumerate(id_batches):
+                batch_file_path = mask_batches_dir / f"mask_batch_{i:04d}.npz"
+                # RESUME LOGIC: Skip batches that have already been saved
+                if batch_file_path.exists():
+                    continue
+
+                print(f"\nProcessing mask batch {i + 1} / {len(id_batches)}")
+
+                batch_masks = {}
+                for point_id in tqdm(id_batch, desc="Generating Masks"):
+                    elevations = elevation_data[point_id]
+                    num_bins = len(elevations)
+                    angles = np.linspace(0, 360, num_bins, endpoint=False)
+                    batch_masks[point_id] = generate_skyline_mask_array(
+                        angles,
+                        elevations,
+                        constants.PANORAMA_IMG_WIDTH,
+                        constants.PANORAMA_IMG_HEIGHT,
+                    )
+
+                # Save only the current batch to its own file
+                print(f"Saving {len(batch_masks)} masks to {batch_file_path.name}")
+                np.savez_compressed(batch_file_path, **batch_masks)
+                gc.collect()
+
+        print_separator("PART C: Merging Batches into Final Database")
+
+        batch_files = sorted(list(mask_batches_dir.glob("*.npz")))
+        if not batch_files:
+            print("No mask batches found to merge.")
             return True
 
         print(
-            f"Total points to process: {len(point_ids_to_process)} / {len(all_point_ids)}"
+            f"Merging {len(batch_files)} batch files into '{final_masks_path.name}'..."
         )
 
-        # 3. BATCHING
-        batches = [
-            point_ids_to_process[i : i + BATCH_SIZE]
-            for i in range(0, len(point_ids_to_process), BATCH_SIZE)
-        ]
-        num_processes = max(1, cpu_count() - 10)
-        worker_config = {
-            "SEARCH_RADIUS": constants.SEARCH_RADIUS,
-            "ANGLE_STEP": constants.ANGLE_STEP,
-            "MIN_DISTANCE": constants.MIN_DISTANCE,
-        }
+        with zipfile.ZipFile(
+            final_masks_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as zf_out:
+            for batch_file in tqdm(batch_files, desc="Merging Batches"):
+                with zipfile.ZipFile(batch_file, "r") as zf_in:
+                    for item in zf_in.namelist():
+                        buffer = zf_in.read(item)
+                        zf_out.writestr(item, buffer)
 
-        # 4. MAIN BATCH PROCESSING LOOP
-        for i, batch_point_ids in enumerate(batches):
-            print_separator(f"Processing Batch {i + 1} / {len(batches)}")
-
-            # A. Generate tasks just for this batch
-            batch_tasks = []
-            print("Preparing tasks for the current batch...")
-            for point_id in tqdm(batch_point_ids, desc="Pre-calculating tasks"):
-                coords = coord_lookup[point_id]
-                viewpoint_coords = (coords["easting"], coords["northing"], 1.5)
-                for laz_file in all_laz_files:
-                    if check_file_relevance_from_json(laz_file, viewpoint_coords):
-                        batch_tasks.append((point_id, viewpoint_coords, laz_file))
-
-            if not batch_tasks:
-                print("No relevant tasks for this batch. Skipping.")
-                continue
-
-            # B. Run workers for the batch
-            print(
-                f"Distributing {len(batch_tasks)} tasks across {num_processes} CPU cores..."
-            )
-            partial_results = []
-            with Pool(
-                processes=num_processes,
-                initializer=init_worker,
-                initargs=(worker_config,),
-            ) as pool:
-                iterator = pool.imap_unordered(process_viewpoint_and_file, batch_tasks)
-                for result in tqdm(
-                    iterator, total=len(batch_tasks), desc="Processing LAZ files"
-                ):
-                    if result and result[1] is not None:
-                        partial_results.append(result)
-
-            # C. Aggregate and generate masks for the batch
-            batch_skyline_data = {}
-            for point_id, (azimuths, elevations) in partial_results:
-                if point_id not in batch_skyline_data:
-                    num_bins = int(360 / constants.ANGLE_STEP)
-                    batch_skyline_data[point_id] = np.full(num_bins, 0.0)
-
-                df = pd.DataFrame({"azimuth": azimuths, "elevation": elevations})
-                num_bins = len(batch_skyline_data[point_id])
-                angle_labels = np.arange(num_bins)
-                angle_bin_edges = np.linspace(0, 360, num_bins + 1)
-                df["bin"] = pd.cut(
-                    df["azimuth"],
-                    bins=angle_bin_edges,
-                    labels=angle_labels,
-                    right=False,
-                    include_lowest=True,
-                )
-                max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
-                new_maxes = np.full(num_bins, 0.0)
-                new_maxes[max_in_bin.index] = max_in_bin.values
-                batch_skyline_data[point_id] = np.maximum(
-                    batch_skyline_data[point_id], new_maxes
-                )
-
-            batch_final_masks = {}
-            for point_id, elevations in batch_skyline_data.items():
-                num_bins = len(elevations)
-                angles = np.linspace(0, 360, num_bins, endpoint=False)
-                batch_final_masks[point_id] = generate_skyline_mask_array(
-                    angles,
-                    elevations,
-                    constants.PANORAMA_IMG_WIDTH,
-                    constants.PANORAMA_IMG_HEIGHT,
-                )
-
-            # D. Incremental Save
-            print(
-                f"Saving results for {len(batch_final_masks)} points from this batch..."
-            )
-            # Load existing data, update it, and save back
-            existing_data = {}
-            if output_path.exists():
-                existing_data = dict(np.load(output_path))
-
-            existing_data.update(batch_final_masks)
-            np.savez_compressed(output_path, **existing_data)
-            print(f"Database now contains {len(existing_data)} total masks.")
-
-        print(f"\n✅ LiDAR skyline mask generation complete. Saved to '{output_path}'.")
+        print(
+            f"\nLiDAR skyline mask generation complete. Final masks saved to '{final_masks_path}'."
+        )
         return True
 
     except Exception as e:
@@ -1280,12 +1510,13 @@ def run_lidar_skyline_generation():
 # TODO: Maybe one thing we want to do, since the panoramas we have lose some information in the borders where the two camera images connect, perhaps before rotating the panoramas in north normalized direction, just like the dems are, we keep track of how much they need to be rotated, and then where the edges between the front and back facing images are, and cut out a couple of percent HFOV from the DEM simulated image there as well. This is because the DEM image has perfect 360deg coverage while our panoramas has maybe 2x175deg or something similar in practice, even though it should be 2x180deg.
 def run_dem_skyline_encoding():
     """
-    Stage 14: Load a DEM skyline mask database and create all fingerprint types.
+    Stage 15: Load a DEM skyline mask database and create all fingerprint types
+    in a memory-safe way.
     """
     print_stage_header(
-        14,
+        15,
         "DEM SKYLINE ENCODING",
-        "Generates all fingerprint types from a pre-computed DEM mask database.",
+        "Generates fingerprints from the DEM database in a streaming fashion.",
     )
 
     try:
@@ -1295,35 +1526,44 @@ def run_dem_skyline_encoding():
 
         if not mask_db_path.is_file():
             print(f" DEM skyline mask database not found at '{mask_db_path}'.")
-            print("   Please run Stage 8 first.")
+            print("   Please run Stage 14 first.")
             return False
 
-        print(f"Loading DEM skyline masks from {mask_db_path}...")
-        skyline_mask_database = np.load(mask_db_path)
-        print(f"Loaded {len(skyline_mask_database.files)} simulated skylines.")
+        print(f"Opening DEM skyline database from {mask_db_path}...")
 
-        # Define the output base directory
-        dataset_db_dir = db_root_dir / "dem_database"
-
-        # Fourier encoding
-        for strategy in ["global", "windowed"]:
-            fourier_fps = fourier_skyline_encoder.create_fingerprints_from_database(
-                skyline_mask_database, strategy=strategy
+        # Use lazy-loading to open the database without loading it all into RAM
+        with np.load(mask_db_path) as skyline_mask_data:
+            print(
+                f"Found {len(skyline_mask_data.files)} simulated skylines to process."
             )
-            if fourier_fps:
-                output_path = (
-                    dataset_db_dir
-                    / f"fourier_{strategy}_fingerprints"
-                    / "fingerprints.npz"
-                )
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                np.savez_compressed(output_path, **fourier_fps)
-                print(f"Saved DEM Fourier ({strategy}) fingerprints to {output_path}")
 
-        # CNN encoding
-        cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_database(
-            skyline_mask_database
-        )
+            dataset_db_dir = db_root_dir / "dem_database"
+
+            # Fourier encoding
+            for strategy in ["global", "windowed"]:
+                # Pass the lazy-loaded data object to the new helper function
+                fourier_fps = (
+                    fourier_skyline_encoder.create_fingerprints_from_lazy_loader(
+                        skyline_mask_data, strategy=strategy
+                    )
+                )
+                if fourier_fps:
+                    output_path = (
+                        dataset_db_dir
+                        / f"fourier_{strategy}_fingerprints"
+                        / "fingerprints.npz"
+                    )
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(output_path, **fourier_fps)
+                    print(
+                        f"Saved DEM Fourier ({strategy}) fingerprints to {output_path}"
+                    )
+
+            # CNN encoding
+            cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_lazy_loader(
+                skyline_mask_data,
+                pooling_strategy="avg",  # can experiment with 'max' here
+            )
         if cnn_fps:
             output_path = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1341,13 +1581,116 @@ def run_dem_skyline_encoding():
         return False
 
 
+def run_database_visualization():
+    """
+    Stage 16: Loads a mask from the final database closest to a user-selected
+    real-world coordinate for visual inspection.
+    """
+    print_stage_header(
+        16, "DATABASE VISUALIZATION", "Spot-checking a final skyline mask."
+    )
+    try:
+        project_root = Path(__file__).parent
+        db_path = project_root / "databases" / "dem_database" / "skyline_masks.npz"
+
+        if not db_path.exists():
+            print(
+                f"ERROR: Final database not found at '{db_path}'. Please run Stage 14/15 first."
+            )
+            return False
+
+        # 1. Select a real-world coordinate
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir()
+                and (d / "gps_interpolated_with_orientation.csv").is_file()
+            ]
+        )
+        if not dataset_dirs:
+            print("No datasets with GPS files found to select a coordinate from.")
+            return False
+
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to provide a coordinate:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print("Invalid input.")
+            except ValueError:
+                print("Invalid input.")
+
+        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        gps_df = pd.read_csv(gps_csv_path)
+        print("\nPlease select a data point to find the closest match for:")
+        print(gps_df.head(10).to_string())
+        choice_str = input(f"Enter the index (0-{len(gps_df) - 1}): ")
+        choice_idx = int(choice_str)
+        selected_point = gps_df.iloc[choice_idx]
+        query_coord = np.array([selected_point["easting"], selected_point["northing"]])
+
+        # 2. Search the database for the closest point
+        print("\nSearching database for the closest grid point...")
+        with np.load(db_path) as data:
+            all_point_ids = data.files
+            # Parse all 'dem_vp_easting_northing' keys into a NumPy array of coordinates
+            db_coords = np.array(
+                [
+                    [int(pid.split("_")[2]), int(pid.split("_")[3])]
+                    for pid in all_point_ids
+                ]
+            )
+
+            # Efficiently find the index of the closest point using NumPy
+            distances = np.sum((db_coords - query_coord) ** 2, axis=1)
+            closest_idx = np.argmin(distances)
+            closest_point_id = all_point_ids[closest_idx]
+
+            print(f"Query Coordinate: ({query_coord[0]:.1f}, {query_coord[1]:.1f})")
+            print(f"Closest Found ID: {closest_point_id}")
+
+            # 3. Visualize the result
+            mask_array = data[closest_point_id]
+
+            plt.figure(figsize=(12, 3))
+            plt.imshow(mask_array, cmap="gray", aspect="auto")
+            plt.title(f"Skyline Mask for Closest Point: {closest_point_id}")
+            plt.xlabel("Azimuth")
+            plt.ylabel("Elevation")
+
+            output_dir = project_root / "output_plots"
+            output_dir.mkdir(exist_ok=True)
+            save_path = output_dir / f"database_visualization_{closest_point_id}.png"
+            plt.savefig(save_path)
+            plt.close()
+            print(f"✅ Visualization saved to: {save_path}")
+
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during database visualization: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 def run_skyline_fourier_encoder():
     """
-    Stage 15: Select a dataset and create fingerprint databases in the project root
+    Stage 17: Select a dataset and create fingerprint databases in the project root
     under a new per-dataset directory structure.
     """
     print_stage_header(
-        15,
+        17,
         "SKYLINE FINGERPRINTING",
         "Generating 'global' and 'windowed' fingerprint databases.",
     )
@@ -1432,11 +1775,11 @@ def run_skyline_fourier_encoder():
 
 def run_matching_analysis():
     """
-    Stage 16: Perform a self-matching analysis on a fingerprint database,
+    Stage 18: Perform a self-matching analysis on a fingerprint database,
     showing detailed per-window scores for windowed strategies.
     """
     print_stage_header(
-        16,
+        18,
         "FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other to test fingerprint quality.",
     )
@@ -1511,10 +1854,10 @@ def run_matching_analysis():
 
 def run_cnn_encoding():
     """
-    Stage 17: Select a dataset and create CNN-based fingerprints for its binary panoramas.
+    Stage 19: Select a dataset and create CNN-based fingerprints for its binary panoramas.
     """
     print_stage_header(
-        17,
+        19,
         "CNN SKYLINE ENCODING",
         "Generating rich feature vectors using a pre-trained CNN.",
     )
@@ -1577,11 +1920,11 @@ def run_cnn_encoding():
 
 def run_cnn_matching_analysis():
     """
-    Stage 18: Perform a self-matching analysis on a CNN-based fingerprint
+    Stage 20: Perform a self-matching analysis on a CNN-based fingerprint
     database to validate the encoding method.
     """
     print_stage_header(
-        18,
+        20,
         "CNN FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other using CNN features.",
     )
@@ -1649,10 +1992,10 @@ def run_cnn_matching_analysis():
 
 def run_dem_visualization():
     """
-    Stage 19: Visualize a few sample DEM skylines using coordinates from a dataset's GPS file.
+    Stage 21: Visualize a few sample DEM skylines using coordinates from a dataset's GPS file.
     """
     print_stage_header(
-        19,
+        21,
         "VISUALIZE DEM SKYLINE MASKS",
         "Displaying sample masks generated from LiDAR data.",
     )
@@ -1773,28 +2116,31 @@ def main():
         1: ("Split Images", run_image_splitting),
         2: ("Segment Fisheye For Roll Network", run_fisheye_segmentation),
         3: ("Train Roll Angle Estimator", run_roll_angle_training),
+        "3b": ("Run K-Fold Cross-Validation", run_roll_angle_cross_validation),
         4: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
         5: ("Interactive Roll Prediction", run_interactive_roll_prediction),
-        6: ("Undistort Fisheye", run_fisheye_undistortion),
-        7: ("Process GPS/Orientation", run_gps_orientation_processing),
-        8: ("Stitch Panoramas", run_panorama_stitching),
-        9: ("Segment Skylines", run_skyline_segmentation),
-        10: (
+        6: ("Visualize CNN Features", run_feature_visualization),
+        7: ("Undistort Fisheye", run_fisheye_undistortion),
+        8: ("Process GPS/Orientation", run_gps_orientation_processing),
+        9: ("Stitch Panoramas", run_panorama_stitching),
+        10: ("Segment Skylines", run_skyline_segmentation),
+        11: (
             "Build COLMAP Databases",
             lambda: build_colmap_databases(args.rebuild_colmap),
         ),
-        11: (
+        12: (
             "Analyze Retrieval Accuracy",
             lambda: analyze_retrieval_accuracy(args.sample_rate),
         ),
-        12: ("Single Point Validation", run_single_point_validation),
-        13: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
-        14: ("Encode DEM Skylines", run_dem_skyline_encoding),
-        15: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
-        16: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
-        17: ("Fourier Matching Analysis", run_matching_analysis),
-        18: ("CNN Matching Analysis", run_cnn_matching_analysis),
-        19: ("Visualize DEM Skylines", run_dem_visualization),
+        13: ("Single Point Validation", run_single_point_validation),
+        14: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
+        15: ("Encode DEM Skylines", run_dem_skyline_encoding),
+        16: ("Visualize Database Mask", run_database_visualization),
+        17: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
+        18: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
+        19: ("Fourier Matching Analysis", run_matching_analysis),
+        20: ("CNN Matching Analysis", run_cnn_matching_analysis),
+        21: ("Visualize DEM Skylines", run_dem_visualization),
     }
 
     # Determine which stages to run
