@@ -221,7 +221,11 @@ def build_panoramas(
     orientation_csv_path=None,
     apply_rotation=True,
     manual_rotation_offset_deg=16.0,
+<<<<<<< HEAD
 ):
+=======
+):  # With our undistortion there seems to be about a 16 degree offset between the boats and the cameras orientation
+>>>>>>> arvid_dev
     """
     Finds corresponding sets of four images, stitches them into intermediate
     and final panoramas, and saves them.
