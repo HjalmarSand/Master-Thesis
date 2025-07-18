@@ -283,9 +283,6 @@ def visualize_model_features(model_path: Path, image_path: Path, output_dir: Pat
     print(f"✅ Saved feature map visualization to '{feature_map_save_path}'")
 
 
-# In AI/roll_angle_estimator.py
-
-
 def run_kfold_cross_validation(
     image_dirs: List[Path],
     annotation_csv: Path,

@@ -1,12 +1,16 @@
 import argparse
+import gc
 import sys
 import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import matplotlib
+from matplotlib import pyplot as plt
 
 matplotlib.use("TkAgg")
+import zipfile
+
 import numpy as np
 import pandas as pd
 import torch
@@ -259,7 +263,7 @@ def run_roll_angle_cross_validation():
             print(f"ERROR: Annotation file not found at '{annotation_csv_path}'")
             return False
 
-        # --- CONFIGURE YOUR TRAINING DATA HERE ---
+        # CONFIGURE YOUR TRAINING DATA HERE
         training_folders = [
             # images_root / "dataset1" / "distorted_images_cam1",
             images_root / "dataset2" / "distorted_images_cam1",
@@ -327,7 +331,7 @@ def run_roll_model_evaluation():
                 transforms.Normalize(mean=[0.5], std=[0.5]),
             ]
         )
-        # --- END OF BLOCK ---
+        # END OF BLOCK
 
         plot_save_path = (
             project_root / "AI" / "evaluation_results" / "evaluation_combined_model.png"
@@ -358,7 +362,7 @@ def run_interactive_roll_prediction():
     try:
         project_root = Path(__file__).parent
 
-        # --- Path to the single combined model ---
+        # Path to the single combined model
         model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
         if not model_path.is_file():
             print(
@@ -366,13 +370,13 @@ def run_interactive_roll_prediction():
             )
             return False
 
-        # --- CONFIGURE THE TEST IMAGE HERE ---
+        # CONFIGURE THE TEST IMAGE HERE
         # Define the relative path to the image you want to test.
         image_path = (
             project_root
             / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
         )
-        # --- END OF CONFIGURATION ---
+        # END OF CONFIGURATION
 
         if not image_path.is_file():
             print(f"ERROR: Test image not found at '{image_path}'")
@@ -415,7 +419,7 @@ def run_interactive_roll_prediction():
         with torch.no_grad():
             predicted_angle = model(image_tensor).item()
 
-        print("\n--- Prediction Result ---")
+        print("\nPrediction Result")
         print(f"Predicted Roll Angle: {predicted_angle:.2f} degrees")
         return True
 
@@ -435,7 +439,7 @@ def run_feature_visualization():
     try:
         project_root = Path(__file__).parent
 
-        # --- Path to the single combined model ---
+        # Path to the single combined model
         model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
         if not model_path.is_file():
             print(
@@ -443,13 +447,13 @@ def run_feature_visualization():
             )
             return False
 
-        # --- CONFIGURE THE VISUALIZATION IMAGE HERE ---
+        # CONFIGURE THE VISUALIZATION IMAGE HERE
         # Define the relative path to the image you want to visualize.
         sample_image_path = (
             project_root
             / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
         )
-        # --- END OF CONFIGURATION ---
+        # END OF CONFIGURATION
 
         if not sample_image_path.is_file():
             print(f"ERROR: Sample image not found at '{sample_image_path}'.")
@@ -596,7 +600,7 @@ def run_fisheye_undistortion():
         )
 
         print(
-            f"\n✅ Fisheye undistortion for '{selected_dir.name}' finished successfully!"
+            f"\nFisheye undistortion for '{selected_dir.name}' finished successfully!"
         )
         return True
 
@@ -680,7 +684,7 @@ def run_gps_orientation_processing():
         )
 
         print(
-            f"\n✅ GPS orientation processing for '{selected_source_dir.name}' complete."
+            f"\nGPS orientation processing for '{selected_source_dir.name}' complete."
         )
         return True
 
@@ -900,7 +904,7 @@ def run_skyline_segmentation():
 
         if exit_code == 0:
             print(
-                f"\n✅ Skyline segmentation completed successfully for {selected_dir.name}!"
+                f"\nSkyline segmentation completed successfully for {selected_dir.name}!"
             )
             return True
         else:
@@ -1300,13 +1304,15 @@ def run_single_point_validation():
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
 def run_lidar_skyline_generation():
     """
-    Stage 14: Generate a LiDAR skyline database with full resilience and load balancing.
+    Stage 14: Generate a LiDAR skyline database with a correct, memory-safe,
+    and resilient architecture.
     """
-    print_stage_header(14, "LIDAR SKYLINE MASK GENERATION (FULLY RESILIENT)")
+    print_stage_header(14, "LIDAR SKYLINE MASK GENERATION (MEMORY-SAFE)")
 
     try:
-        VIEWPOINTS_PER_TASK_CHUNK = 100
-        TASKS_PER_BATCH = 200  # Process 200 small tasks, then save.
+        MAX_CONCURRENT_LAZ_FILES = (
+            10  # Cap the number of LAZ files processed in parallel
+        )
 
         project_root = Path(__file__).resolve().parent
         db_dir = project_root / "databases" / "dem_database"
@@ -1314,23 +1320,16 @@ def run_lidar_skyline_generation():
         elevations_path = db_dir / "skyline_elevations.npz"
         final_masks_path = db_dir / "skyline_masks.npz"
 
-        # PART A: RESILIENT ELEVATION AGGREGATION
         print_separator("PART A: Aggregating Elevation Data")
 
-        # 2. Load existing data to see what's already done
-        final_elevation_data = {}
+        # 1. Load ONLY the list of completed IDs to resume
+        processed_point_ids = set()
         if elevations_path.exists():
-            with np.load(elevations_path, allow_pickle=True) as existing_data:
-                final_elevation_data = {
-                    key: existing_data[key] for key in existing_data.keys()
-                }
-        processed_point_ids = set(final_elevation_data.keys())
-        if processed_point_ids:
-            print(
-                f"Loaded {len(processed_point_ids)} existing elevation profiles to resume."
-            )
+            with np.load(elevations_path) as existing_data:
+                processed_point_ids = set(existing_data.keys())
+            print(f"Loaded {len(processed_point_ids)} existing points to resume.")
 
-        # 3. Map LAZ files to viewpoints that STILL NEED to be processed
+        # 2. Map LAZ files to viewpoints that STILL NEED to be processed
         grid_df = create_and_save_grid(
             start_coords=(611597.725, 6458055.924),
             end_coords=(614547.264, 6463806.450),
@@ -1344,8 +1343,7 @@ def run_lidar_skyline_generation():
         for x, y in tqdm(all_coords, desc="Planning tasks"):
             point_id = f"dem_vp_{x:.0f}_{y:.0f}"
             if point_id in processed_point_ids:
-                continue  # Skip points that are already processed
-
+                continue
             viewpoint_coords = (x, y, 1.5)
             for laz_file in all_laz_files:
                 if check_file_relevance_from_json(laz_file, viewpoint_coords):
@@ -1353,77 +1351,149 @@ def run_lidar_skyline_generation():
                         (point_id, viewpoint_coords)
                     )
 
-        # 4. Create fine-grained, batched tasks
-        all_tasks = []
-        for laz_path_str, vps in tile_to_viewpoints_map.items():
-            if not vps:
-                continue
-            for i in range(0, len(vps), VIEWPOINTS_PER_TASK_CHUNK):
-                all_tasks.append(
-                    (Path(laz_path_str), vps[i : i + VIEWPOINTS_PER_TASK_CHUNK])
-                )
-
-        if not all_tasks:
+        relevant_laz_files = [
+            Path(p) for p, vps in tile_to_viewpoints_map.items() if vps
+        ]
+        if not relevant_laz_files:
             print("\nAll viewpoints have already been processed.")
         else:
-            print(f"Created {len(all_tasks)} new tasks for processing.")
-            task_batches = [
-                all_tasks[i : i + TASKS_PER_BATCH]
-                for i in range(0, len(all_tasks), TASKS_PER_BATCH)
+            # 3. Create batches OF LAZ FILES
+            laz_batches = [
+                relevant_laz_files[i : i + MAX_CONCURRENT_LAZ_FILES]
+                for i in range(0, len(relevant_laz_files), MAX_CONCURRENT_LAZ_FILES)
             ]
             num_processes = max(1, cpu_count() - 6)
 
-            # 5. Main batch processing loop
-            for i, batch_tasks in enumerate(task_batches):
-                print_separator(f"Processing Batch {i + 1} / {len(task_batches)}")
+            # 4. Main batch processing loop
+            for i, laz_batch in enumerate(laz_batches):
+                print_separator(
+                    f"Processing LAZ File Batch {i + 1} / {len(laz_batches)}"
+                )
 
+                # Create one coarse-grained task per LAZ file in the batch
+                batch_tasks = [
+                    (laz_path, tile_to_viewpoints_map[str(laz_path)])
+                    for laz_path in laz_batch
+                ]
+
+                print(f"Processing {len(batch_tasks)} LAZ files in this batch...")
+
+                batch_skyline_data = {}
                 with Pool(processes=num_processes) as pool:
                     iterator = pool.imap_unordered(
                         process_tile_for_multiple_viewpoints, batch_tasks
                     )
-                    for tile_results in tqdm(
-                        iterator, total=len(batch_tasks), desc="Processing Chunks"
-                    ):
-                        for point_id, partial_skyline in tile_results:
-                            if point_id not in final_elevation_data:
-                                final_elevation_data[point_id] = partial_skyline
-                            else:
-                                final_elevation_data[point_id] = np.maximum(
-                                    final_elevation_data[point_id], partial_skyline
-                                )
+                    with tqdm(total=len(batch_tasks), desc="Processing Tiles") as pbar:
+                        for tile_results in iterator:
+                            for point_id, partial_skyline in tile_results:
+                                if point_id not in batch_skyline_data:
+                                    batch_skyline_data[point_id] = partial_skyline
+                                else:
+                                    batch_skyline_data[point_id] = np.maximum(
+                                        batch_skyline_data[point_id], partial_skyline
+                                    )
 
-                # 6. Incremental save of the raw elevation data
+                            # Update the progress bar after processing each tile
+                            pbar.update(1)
+                            # Display the number of unique points aggregated in THIS batch so far
+                            pbar.set_postfix_str(
+                                f"New Points in Batch: {len(batch_skyline_data)}"
+                            )
+
+                # 5. Merge and Save Incrementally
+                if not batch_skyline_data:
+                    print("No results generated in this batch.")
+                    continue
+
                 print(
-                    f"\nSaving progress... Total points aggregated: {len(final_elevation_data)}"
+                    f"\nMerging {len(batch_skyline_data)} new/updated points into database..."
                 )
-                np.savez_compressed(elevations_path, **final_elevation_data)
+                existing_data = {}
+                if elevations_path.exists():
+                    with np.load(elevations_path, allow_pickle=True) as data:
+                        existing_data = dict(data)
+
+                for point_id, new_skyline in batch_skyline_data.items():
+                    if point_id not in existing_data:
+                        existing_data[point_id] = new_skyline
+                    else:
+                        existing_data[point_id] = np.maximum(
+                            existing_data[point_id], new_skyline
+                        )
+
+                np.savez_compressed(elevations_path, **existing_data)
                 print("Progress saved successfully.")
+                gc.collect()
 
-        # PART B: FINAL MASK GENERATION
-        print_separator("PART B: Generating Final Masks")
+        print_separator("PART B: Generating Final Masks in Batches")
 
-        if not final_elevation_data:
-            print("No elevation data to process. Exiting.")
+        if not elevations_path.exists():
+            print("No elevation data found to process. Exiting.")
+            return True
+
+        # Create a dedicated directory for the mask batches
+        mask_batches_dir = db_dir / "mask_batches"
+        mask_batches_dir.mkdir(exist_ok=True)
+
+        with np.load(elevations_path, allow_pickle=True) as elevation_data:
+            all_point_ids = list(elevation_data.keys())
+
+            # Find which batches still need to be created
+            point_ids_to_process = all_point_ids
+            print(
+                f"Preparing to generate masks for {len(point_ids_to_process)} points..."
+            )
+
+            MASK_BATCH_SIZE = 500
+            id_batches = [
+                point_ids_to_process[i : i + MASK_BATCH_SIZE]
+                for i in range(0, len(point_ids_to_process), MASK_BATCH_SIZE)
+            ]
+
+            for i, id_batch in enumerate(id_batches):
+                batch_file_path = mask_batches_dir / f"mask_batch_{i:04d}.npz"
+                # RESUME LOGIC: Skip batches that have already been saved
+                if batch_file_path.exists():
+                    continue
+
+                print(f"\nProcessing mask batch {i + 1} / {len(id_batches)}")
+
+                batch_masks = {}
+                for point_id in tqdm(id_batch, desc="Generating Masks"):
+                    elevations = elevation_data[point_id]
+                    num_bins = len(elevations)
+                    angles = np.linspace(0, 360, num_bins, endpoint=False)
+                    batch_masks[point_id] = generate_skyline_mask_array(
+                        angles,
+                        elevations,
+                        constants.PANORAMA_IMG_WIDTH,
+                        constants.PANORAMA_IMG_HEIGHT,
+                    )
+
+                # Save only the current batch to its own file
+                print(f"Saving {len(batch_masks)} masks to {batch_file_path.name}")
+                np.savez_compressed(batch_file_path, **batch_masks)
+                gc.collect()
+
+        print_separator("PART C: Merging Batches into Final Database")
+
+        batch_files = sorted(list(mask_batches_dir.glob("*.npz")))
+        if not batch_files:
+            print("No mask batches found to merge.")
             return True
 
         print(
-            f"Converting {len(final_elevation_data)} elevation profiles to final masks..."
+            f"Merging {len(batch_files)} batch files into '{final_masks_path.name}'..."
         )
-        final_skyline_masks = {}
-        for point_id, elevations in tqdm(
-            final_elevation_data.items(), desc="Generating Masks"
-        ):
-            num_bins = len(elevations)
-            angles = np.linspace(0, 360, num_bins, endpoint=False)
-            final_skyline_masks[point_id] = generate_skyline_mask_array(
-                angles,
-                elevations,
-                constants.PANORAMA_IMG_WIDTH,
-                constants.PANORAMA_IMG_HEIGHT,
-            )
 
-        print(f"\nSaving final mask database with {len(final_skyline_masks)} masks")
-        np.savez_compressed(final_masks_path, **final_skyline_masks)
+        with zipfile.ZipFile(
+            final_masks_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as zf_out:
+            for batch_file in tqdm(batch_files, desc="Merging Batches"):
+                with zipfile.ZipFile(batch_file, "r") as zf_in:
+                    for item in zf_in.namelist():
+                        buffer = zf_in.read(item)
+                        zf_out.writestr(item, buffer)
 
         print(
             f"\nLiDAR skyline mask generation complete. Final masks saved to '{final_masks_path}'."
@@ -1441,12 +1511,13 @@ def run_lidar_skyline_generation():
 # TODO: Maybe one thing we want to do, since the panoramas we have lose some information in the borders where the two camera images connect, perhaps before rotating the panoramas in north normalized direction, just like the dems are, we keep track of how much they need to be rotated, and then where the edges between the front and back facing images are, and cut out a couple of percent HFOV from the DEM simulated image there as well. This is because the DEM image has perfect 360deg coverage while our panoramas has maybe 2x175deg or something similar in practice, even though it should be 2x180deg.
 def run_dem_skyline_encoding():
     """
-    Stage 15: Load a DEM skyline mask database and create all fingerprint types.
+    Stage 15: Load a DEM skyline mask database and create all fingerprint types
+    in a memory-safe way.
     """
     print_stage_header(
         15,
         "DEM SKYLINE ENCODING",
-        "Generates all fingerprint types from a pre-computed DEM mask database.",
+        "Generates fingerprints from the DEM database in a streaming fashion.",
     )
 
     try:
@@ -1456,35 +1527,44 @@ def run_dem_skyline_encoding():
 
         if not mask_db_path.is_file():
             print(f" DEM skyline mask database not found at '{mask_db_path}'.")
-            print("   Please run Stage 8 first.")
+            print("   Please run Stage 14 first.")
             return False
 
-        print(f"Loading DEM skyline masks from {mask_db_path}...")
-        skyline_mask_database = np.load(mask_db_path)
-        print(f"Loaded {len(skyline_mask_database.files)} simulated skylines.")
+        print(f"Opening DEM skyline database from {mask_db_path}...")
 
-        # Define the output base directory
-        dataset_db_dir = db_root_dir / "dem_database"
-
-        # Fourier encoding
-        for strategy in ["global", "windowed"]:
-            fourier_fps = fourier_skyline_encoder.create_fingerprints_from_database(
-                skyline_mask_database, strategy=strategy
+        # Use lazy-loading to open the database without loading it all into RAM
+        with np.load(mask_db_path) as skyline_mask_data:
+            print(
+                f"Found {len(skyline_mask_data.files)} simulated skylines to process."
             )
-            if fourier_fps:
-                output_path = (
-                    dataset_db_dir
-                    / f"fourier_{strategy}_fingerprints"
-                    / "fingerprints.npz"
-                )
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                np.savez_compressed(output_path, **fourier_fps)
-                print(f"Saved DEM Fourier ({strategy}) fingerprints to {output_path}")
 
-        # CNN encoding
-        cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_database(
-            skyline_mask_database
-        )
+            dataset_db_dir = db_root_dir / "dem_database"
+
+            # Fourier encoding
+            for strategy in ["global", "windowed"]:
+                # Pass the lazy-loaded data object to the new helper function
+                fourier_fps = (
+                    fourier_skyline_encoder.create_fingerprints_from_lazy_loader(
+                        skyline_mask_data, strategy=strategy
+                    )
+                )
+                if fourier_fps:
+                    output_path = (
+                        dataset_db_dir
+                        / f"fourier_{strategy}_fingerprints"
+                        / "fingerprints.npz"
+                    )
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(output_path, **fourier_fps)
+                    print(
+                        f"Saved DEM Fourier ({strategy}) fingerprints to {output_path}"
+                    )
+
+            # CNN encoding
+            cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_lazy_loader(
+                skyline_mask_data,
+                pooling_strategy="avg",  # can experiment with 'max' here
+            )
         if cnn_fps:
             output_path = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1502,13 +1582,116 @@ def run_dem_skyline_encoding():
         return False
 
 
+def run_database_visualization():
+    """
+    Stage 16: Loads a mask from the final database closest to a user-selected
+    real-world coordinate for visual inspection.
+    """
+    print_stage_header(
+        16, "DATABASE VISUALIZATION", "Spot-checking a final skyline mask."
+    )
+    try:
+        project_root = Path(__file__).parent
+        db_path = project_root / "databases" / "dem_database" / "skyline_masks.npz"
+
+        if not db_path.exists():
+            print(
+                f"ERROR: Final database not found at '{db_path}'. Please run Stage 14/15 first."
+            )
+            return False
+
+        # 1. Select a real-world coordinate
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir()
+                and (d / "gps_interpolated_with_orientation.csv").is_file()
+            ]
+        )
+        if not dataset_dirs:
+            print("No datasets with GPS files found to select a coordinate from.")
+            return False
+
+        selected_dir = None
+        while True:
+            print("\nPlease select a dataset to provide a coordinate:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice_str = input("Enter the number of the dataset: ")
+            try:
+                choice_idx = int(choice_str)
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+                else:
+                    print("Invalid input.")
+            except ValueError:
+                print("Invalid input.")
+
+        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        gps_df = pd.read_csv(gps_csv_path)
+        print("\nPlease select a data point to find the closest match for:")
+        print(gps_df.head(10).to_string())
+        choice_str = input(f"Enter the index (0-{len(gps_df) - 1}): ")
+        choice_idx = int(choice_str)
+        selected_point = gps_df.iloc[choice_idx]
+        query_coord = np.array([selected_point["easting"], selected_point["northing"]])
+
+        # 2. Search the database for the closest point
+        print("\nSearching database for the closest grid point...")
+        with np.load(db_path) as data:
+            all_point_ids = data.files
+            # Parse all 'dem_vp_easting_northing' keys into a NumPy array of coordinates
+            db_coords = np.array(
+                [
+                    [int(pid.split("_")[2]), int(pid.split("_")[3])]
+                    for pid in all_point_ids
+                ]
+            )
+
+            # Efficiently find the index of the closest point using NumPy
+            distances = np.sum((db_coords - query_coord) ** 2, axis=1)
+            closest_idx = np.argmin(distances)
+            closest_point_id = all_point_ids[closest_idx]
+
+            print(f"Query Coordinate: ({query_coord[0]:.1f}, {query_coord[1]:.1f})")
+            print(f"Closest Found ID: {closest_point_id}")
+
+            # 3. Visualize the result
+            mask_array = data[closest_point_id]
+
+            plt.figure(figsize=(12, 3))
+            plt.imshow(mask_array, cmap="gray", aspect="auto")
+            plt.title(f"Skyline Mask for Closest Point: {closest_point_id}")
+            plt.xlabel("Azimuth")
+            plt.ylabel("Elevation")
+
+            output_dir = project_root / "output_plots"
+            output_dir.mkdir(exist_ok=True)
+            save_path = output_dir / f"database_visualization_{closest_point_id}.png"
+            plt.savefig(save_path)
+            plt.close()
+            print(f"✅ Visualization saved to: {save_path}")
+
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during database visualization: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 def run_skyline_fourier_encoder():
     """
-    Stage 16: Select a dataset and create fingerprint databases in the project root
+    Stage 17: Select a dataset and create fingerprint databases in the project root
     under a new per-dataset directory structure.
     """
     print_stage_header(
-        16,
+        17,
         "SKYLINE FINGERPRINTING",
         "Generating 'global' and 'windowed' fingerprint databases.",
     )
@@ -1593,11 +1776,11 @@ def run_skyline_fourier_encoder():
 
 def run_matching_analysis():
     """
-    Stage 17: Perform a self-matching analysis on a fingerprint database,
+    Stage 18: Perform a self-matching analysis on a fingerprint database,
     showing detailed per-window scores for windowed strategies.
     """
     print_stage_header(
-        17,
+        18,
         "FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other to test fingerprint quality.",
     )
@@ -1672,10 +1855,10 @@ def run_matching_analysis():
 
 def run_cnn_encoding():
     """
-    Stage 18: Select a dataset and create CNN-based fingerprints for its binary panoramas.
+    Stage 19: Select a dataset and create CNN-based fingerprints for its binary panoramas.
     """
     print_stage_header(
-        18,
+        19,
         "CNN SKYLINE ENCODING",
         "Generating rich feature vectors using a pre-trained CNN.",
     )
@@ -1738,11 +1921,11 @@ def run_cnn_encoding():
 
 def run_cnn_matching_analysis():
     """
-    Stage 19: Perform a self-matching analysis on a CNN-based fingerprint
+    Stage 20: Perform a self-matching analysis on a CNN-based fingerprint
     database to validate the encoding method.
     """
     print_stage_header(
-        19,
+        20,
         "CNN FINGERPRINT SELF-MATCHING ANALYSIS",
         "Matching real panoramas against each other using CNN features.",
     )
@@ -1810,10 +1993,10 @@ def run_cnn_matching_analysis():
 
 def run_dem_visualization():
     """
-    Stage 20: Visualize a few sample DEM skylines using coordinates from a dataset's GPS file.
+    Stage 21: Visualize a few sample DEM skylines using coordinates from a dataset's GPS file.
     """
     print_stage_header(
-        20,
+        21,
         "VISUALIZE DEM SKYLINE MASKS",
         "Displaying sample masks generated from LiDAR data.",
     )
@@ -1953,11 +2136,12 @@ def main():
         13: ("Single Point Validation", run_single_point_validation),
         14: ("Generate DEM Skyline Masks", run_lidar_skyline_generation),
         15: ("Encode DEM Skylines", run_dem_skyline_encoding),
-        16: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
-        17: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
-        18: ("Fourier Matching Analysis", run_matching_analysis),
-        19: ("CNN Matching Analysis", run_cnn_matching_analysis),
-        20: ("Visualize DEM Skylines", run_dem_visualization),
+        16: ("Visualize Database Mask", run_database_visualization),
+        17: ("Encode REAL Skylines (Fourier)", run_skyline_fourier_encoder),
+        18: ("Encode REAL Skylines (CNN)", run_cnn_encoding),
+        19: ("Fourier Matching Analysis", run_matching_analysis),
+        20: ("CNN Matching Analysis", run_cnn_matching_analysis),
+        21: ("Visualize DEM Skylines", run_dem_visualization),
     }
 
     # Determine which stages to run

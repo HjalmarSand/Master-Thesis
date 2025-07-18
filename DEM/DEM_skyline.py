@@ -275,13 +275,13 @@ def generate_skyline_for_single_point(
         "ANGLE_STEP": constants.ANGLE_STEP,
         "MIN_DISTANCE": constants.MIN_DISTANCE,
     }
-    num_processes = max(1, cpu_count() - 2)
+    num_processes = max(1, cpu_count() - 6)
     partial_results = []
     with Pool(
         processes=num_processes, initializer=init_worker, initargs=(worker_config,)
     ) as pool:
         iterator = pool.imap_unordered(process_viewpoint_and_file, tasks)
-        for result in tqdm(iterator, total=len(tasks), desc=f"Processing"):
+        for result in tqdm(iterator, total=len(tasks), desc="Processing"):
             if result and result[1] is not None:
                 partial_results.append(result)
 

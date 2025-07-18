@@ -15,33 +15,35 @@ from tqdm import tqdm
 
 class CnnEncoder:
     """
-    Encodes binary skyline images into feature vectors using a pre-trained CNN.
+    Encodes binary skyline arrays into feature vectors using a pre-trained CNN.
     """
 
-    def __init__(self):
+    def __init__(self, pooling_strategy: str = "avg"):
+        """
+        Initializes the encoder.
+        Args:
+            pooling_strategy (str): 'avg' for AdaptiveAvgPool2d or 'max' for AdaptiveMaxPool2d.
+        """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Initializing CNN Encoder on device: {self.device}")
+        print(
+            f"Initializing CNN Encoder on device: {self.device} with '{pooling_strategy}' pooling."
+        )
 
-        # 1. Load a pre-trained model (MobileNetV2 is lightweight and effective)
         weights = models.MobileNet_V2_Weights.DEFAULT
         model = models.mobilenet_v2(weights=weights)
-
-        # 2. Modify the model to remove the final classification layer.
-        #    The 'features' part of MobileNetV2 is the convolutional base.
         self.feature_extractor = model.features.to(self.device)
-        self.feature_extractor.eval()  # Set the model to evaluation mode
+        self.feature_extractor.eval()
 
-        # 3. Define the image transformations required by the pre-trained model.
+        if pooling_strategy == "max":
+            self.pool = torch.nn.functional.adaptive_max_pool2d
+        else:  # Default to average pooling
+            self.pool = torch.nn.functional.adaptive_avg_pool2d
+
         self.transform = transforms.Compose(
             [
-                # TODO: The step below only works when we are working with 1280x960 aspect ratio for one window. Maybe we would like to create a function that does it best to resize maintaining aspect ratio and then crops in that
-                # 1. Resize the smaller edge to 256 pixels, keeping the aspect ratio.
                 transforms.Resize(256),
-                # 2. Take a 224x224 crop from the center of the resized image.
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                # Pre-trained models expect 3 channels, so we duplicate the single channel.
-                # The normalization values are standard for models trained on ImageNet.
                 transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
                 transforms.Normalize(
                     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -49,90 +51,87 @@ class CnnEncoder:
             ]
         )
 
-    @torch.no_grad()  # Disable gradient calculations for efficiency
-    def encode_image_window(self, image_window: Image.Image) -> np.ndarray:
-        """
-        Encodes a single image window into a feature vector.
-        """
-        # Apply the transformations and add a batch dimension
+    @torch.no_grad()
+    def _encode_pil_window(self, image_window: Image.Image) -> np.ndarray:
+        """Encodes a single PIL image window into a feature vector."""
         img_tensor = self.transform(image_window).unsqueeze(0).to(self.device)
-
-        # Pass the tensor through the feature extractor
         features = self.feature_extractor(img_tensor)
 
-        # TODO: Maybe we want to make modifications here for different encodings and encoding sizes. We could for example pool down to (2, 2) instead and flatten if we want more details but keep robustness. Max pooling could perhaps be useful to experiment with also
+        # Use the configured pooling function
+        pooled_features = self.pool(features, (1, 1))
 
-        # Use adaptive average pooling to get a fixed-size feature vector
-        # regardless of minor variations in feature map size.
-        pooled_features = torch.nn.functional.adaptive_avg_pool2d(features, (1, 1))
-
-        # Flatten the features and convert to a numpy array
         return pooled_features.squeeze().cpu().numpy()
 
-    def get_windowed_fingerprint(
-        self, image_path: Path, num_windows: int = 4
+    def encode_mask_array(
+        self, mask_array: np.ndarray, num_windows: int = 4
     ) -> np.ndarray:
         """
-        Creates a spatially-aware fingerprint for a full panorama by encoding
-        it in overlapping windows.
+        Primary method to create a fingerprint from an in-memory NumPy mask array.
         """
+        if mask_array.ndim != 2 or mask_array.size == 0:
+            return np.array([])
+
         try:
-            with Image.open(image_path).convert("L") as img:
-                img_width, img_height = img.size
-                window_width = img_width // num_windows
+            # Convert NumPy array to PIL Image to use torchvision transforms
+            img = Image.fromarray(mask_array).convert("L")
+            img_width, img_height = img.size
+            window_width = img_width // num_windows
+            overlap = window_width // 4
+            step = window_width - overlap
 
-                # We'll use a small overlap to ensure features at the boundaries are captured
-                overlap = window_width // 4
-                step = window_width - overlap
+            window_fingerprints = []
+            for i in range(num_windows):
+                start = i * step
+                end = start + window_width
+                window_pil = img.crop((start, 0, end, img_height))
+                window_vector = self._encode_pil_window(window_pil)
+                window_fingerprints.append(window_vector)
 
-                window_fingerprints = []
-                for i in range(num_windows):
-                    start = i * step
-                    end = start + window_width
-
-                    # Crop the window from the full panorama
-                    window_pil = img.crop((start, 0, end, img_height))
-
-                    # Encode the single window
-                    window_vector = self.encode_image_window(window_pil)
-                    window_fingerprints.append(window_vector)
-
-                # Concatenate all window vectors into the final meta-fingerprint
-                final_fingerprint = np.concatenate(window_fingerprints)
-
-                # Normalize the final vector for stable cosine similarity comparisons
-                norm = np.linalg.norm(final_fingerprint)
-                return final_fingerprint / norm if norm > 0 else final_fingerprint
-
+            final_fingerprint = np.concatenate(window_fingerprints)
+            norm = np.linalg.norm(final_fingerprint)
+            return final_fingerprint / norm if norm > 0 else final_fingerprint
         except Exception as e:
-            print(f"Warning: Could not process {image_path.name}. Error: {e}")
+            print(f"Warning: Could not process mask array. Error: {e}")
             return np.array([])
 
 
-def create_cnn_fingerprints_for_directory(input_dir: Path, output_filepath: Path):
+def create_cnn_fingerprints_from_lazy_loader(lazy_loaded_data, **kwargs) -> dict:
     """
-    Main function to process a directory of panoramas and save their CNN fingerprints.
+    Processes a large, lazy-loaded .npz file (DEM database).
     """
-    # Create the parent directory for the output file
-    output_filepath.parent.mkdir(parents=True, exist_ok=True)
+    encoder = CnnEncoder(**kwargs)  # Pass any config options like pooling_strategy
+    fingerprints = {}
 
+    for point_id in tqdm(lazy_loaded_data.files, desc="Encoding DEM with CNN"):
+        mask_array = lazy_loaded_data[point_id]
+        fingerprint = encoder.encode_mask_array(mask_array)
+        if fingerprint.size > 0:
+            fingerprints[point_id] = fingerprint
+
+    return fingerprints
+
+
+def create_cnn_fingerprints_for_directory(
+    input_dir: Path, output_filepath: Path, **kwargs
+):
+    """
+    Processes a directory of real image panoramas.
+    """
+    output_filepath.parent.mkdir(parents=True, exist_ok=True)
     image_files = sorted(list(input_dir.glob("*.jpg")) + list(input_dir.glob("*.png")))
     if not image_files:
         print(f"No images found in {input_dir}")
         return 1
 
-    # Initialize the encoder once for the whole batch
-    encoder = CnnEncoder()
-
+    encoder = CnnEncoder(**kwargs)
     fingerprints = {}
     for image_path in tqdm(image_files, desc="Encoding with CNN"):
-        fingerprint = encoder.get_windowed_fingerprint(image_path, num_windows=4)
-        if fingerprint.size > 0:
-            fingerprints[image_path.stem] = fingerprint
-
-    if not fingerprints:
-        print("No CNN fingerprints were generated.")
-        return 1
+        with Image.open(image_path).convert("L") as img:
+            mask_array = np.array(img)
+            # Use the same core encoding function
+            fingerprint = encoder.encode_mask_array(mask_array)
+            if fingerprint.size > 0:
+                fingerprints[image_path.stem] = fingerprint
 
     np.savez_compressed(output_filepath, **fingerprints)
     print(f"\nCNN fingerprinting complete. Data saved to '{output_filepath}'")

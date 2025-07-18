@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from DEM.DEM_point_plot import SEARCH_RADIUS
-
 # --- Project Root Directory ---
 PROJECT_ROOT = Path(__file__).resolve().parent
 
