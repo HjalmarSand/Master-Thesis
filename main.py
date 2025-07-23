@@ -2538,9 +2538,7 @@ def main():
             stage_start = time.time()
 
             if not stage_func():
-                print(
-                    f"\n❌ Stage {stage_num} ({stage_name}) failed. Stopping pipeline."
-                )
+                print(f"\nStage {stage_num} ({stage_name}) failed. Stopping pipeline.")
                 success = False
                 break
 

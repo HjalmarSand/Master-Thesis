@@ -26,7 +26,6 @@ class SkylineTripletDataset(Dataset):
         self.transform = transform
         self.margin_images = margin_images
 
-        # Define paths to the required data directories
         real_skyline_dir = dataset_dir / "binary_panorama_aligned"
         dem_skyline_dir = dataset_dir / "dem_skylines_paired"
         gps_path = dataset_dir / "gps_interpolated_with_orientation.csv"
@@ -38,23 +37,17 @@ class SkylineTripletDataset(Dataset):
                 f"Required data not found in {dataset_dir}. Please run preceding pipeline stages."
             )
 
-        # Load GPS data to find corresponding filenames
         gps_df = pd.read_csv(gps_path)
 
         self.anchor_paths = []
         self.positive_paths = []
 
         print("Loading and verifying triplet pairs...")
-        # Create a list of valid anchor/positive pairs
         for _, row in gps_df.iterrows():
             image_number = Path(row.filename).stem
-
-            anchor_path = (
-                real_skyline_dir / f"binary_panorama_aligned_{image_number}.png"
-            )
+            anchor_path = real_skyline_dir / f"binary_panorama_{image_number}.png"
             positive_path = dem_skyline_dir / f"{image_number}.npy"
 
-            # Ensure both files for the pair actually exist before adding them
             if anchor_path.exists() and positive_path.exists():
                 self.anchor_paths.append(anchor_path)
                 self.positive_paths.append(positive_path)
@@ -86,30 +79,37 @@ class SkylineTripletDataset(Dataset):
 
         # 2. Apply transformations
         if self.transform:
+            # The first transform in our pipeline is RandomResizedCrop
+            random_cropper = self.transform.transforms[0]
+
             # Get parameters for a random crop ONCE
-            # We use the anchor image to get the parameters
-            crop_params = self.transform.transforms[0].get_params(
-                anchor_img,
-                self.transform.transforms[0].scale,
-                self.transform.transforms[0].ratio,
+            crop_params = random_cropper.get_params(
+                anchor_img, random_cropper.scale, random_cropper.ratio
             )
+            # Apply the SAME crop
+            anchor_cropped = F.crop(anchor_img, *crop_params)
+            positive_cropped = F.crop(positive_img, *crop_params)
+            # Apply the SAME resize to get to the final size
+            target_size = [random_cropper.size[0], random_cropper.size[1]]
+            anchor_resized = F.resize(anchor_cropped, target_size, antialias=True)
+            positive_resized = F.resize(positive_cropped, target_size, antialias=True)
 
-            # Apply the SAME crop to anchor and positive
-            anchor_img = F.crop(anchor_img, *crop_params)
-            positive_img = F.crop(positive_img, *crop_params)
+            # Handle Negative Independently
+            # Apply the full random crop + resize transform directly
+            negative_resized = random_cropper(negative_img)
 
-            # Apply a DIFFERENT random crop to the negative
-            neg_crop_params = self.transform.transforms[0].get_params(
-                negative_img,
-                self.transform.transforms[0].scale,
-                self.transform.transforms[0].ratio,
-            )
-            negative_img = F.crop(negative_img, *neg_crop_params)
+            # Apply the rest of the transforms to all three images
+            # We start from the 1st index since the 0th (RandomResizedCrop) is done.
+            final_anchor = anchor_resized
+            final_positive = positive_resized
+            final_negative = negative_resized
 
-            # Note: We skip the first transform (RandomResizedCrop) which we did manually
             for t in self.transform.transforms[1:]:
-                anchor_img = t(anchor_img)
-                positive_img = t(positive_img)
-                negative_img = t(negative_img)
+                final_anchor = t(final_anchor)
+                final_positive = t(final_positive)
+                final_negative = t(final_negative)
 
+            return final_anchor, final_positive, final_negative
+
+        # Fallback if no transform is provided
         return anchor_img, positive_img, negative_img
