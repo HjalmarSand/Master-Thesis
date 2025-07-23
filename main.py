@@ -89,8 +89,8 @@ def get_undistortion_parameters(dataset_dir: Path) -> dict:
             "vertical_offset": 17,
             "horizon_bend_cam1": 15,
             "horizon_bend_cam2": -15,
-            "rotation_cam1": 9.44,
-            "rotation_cam2": -9.85,
+            "roll_cam1": 9.44,
+            "roll_cam2": -9.85,
         }
     else:
         # Default parameters for all other datasets
@@ -98,8 +98,8 @@ def get_undistortion_parameters(dataset_dir: Path) -> dict:
             "vertical_offset": 17,
             "horizon_bend_cam1": 15,
             "horizon_bend_cam2": -15,
-            "rotation_cam1": 5.93,
-            "rotation_cam2": -6.48,
+            "roll_cam1": 5.93,
+            "roll_cam2": -6.48,
         }
 
 
@@ -181,6 +181,15 @@ def run_fisheye_undistortion():
 
         print(f"\nProcessing dataset: {selected_dir.name}")
 
+        predicted_rolls_cam1_csv = selected_dir / "predicted_roll_angles_cam1.csv"
+        if not predicted_rolls_cam1_csv.exists():
+            print(
+                f"Warning: Predicted rolls CSV not found at '{predicted_rolls_cam1_csv}'."
+            )
+            print("         Proceeding without AI roll correction.")
+            # Set to None so the undistorter knows not to use it
+            predicted_rolls_cam1_csv = None
+
         # Initialize the undistorter
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
 
@@ -216,8 +225,10 @@ def run_fisheye_undistortion():
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
             vertical_angle_offset_degrees=-pitch_adjustment_angle,
-            rotation_degrees=params["rotation_cam1"],
+            base_roll_degrees=params["roll_cam1"],
             horizon_bend_correction=params["horizon_bend_cam1"],
+            predicted_rolls_csv=predicted_rolls_cam1_csv,  # Pass the CSV
+            invert_rolls=False,  # Do NOT invert for cam1
         )
 
         # Process Cam2
@@ -231,8 +242,11 @@ def run_fisheye_undistortion():
             rectilinear_fov_degrees=90,
             horizontal_angle_offset_degrees=45,
             vertical_angle_offset_degrees=pitch_adjustment_angle,
-            rotation_degrees=params["rotation_cam2"],
+            base_roll_degrees=params["roll_cam2"],
             horizon_bend_correction=params["horizon_bend_cam2"],
+            predicted_rolls_csv=predicted_rolls_cam1_csv,  # Pass the SAME CSV
+            invert_rolls=True,  # Invert the angles for cam2
+            cam2_additional_static_roll_degrees=-0.5,
         )
 
         print(
@@ -2234,7 +2248,7 @@ def run_roll_angle_training():
 
         # Add the paths to all the image folders you want to train on.
         training_folders = [
-            # images_root / "dataset1" / "distorted_images_cam1",
+            images_root / "dataset1" / "distorted_images_cam1",
             images_root / "dataset2" / "distorted_images_cam1",
             images_root / "dataset3" / "distorted_images_cam1",
         ]
@@ -2275,16 +2289,16 @@ def run_roll_model_evaluation():
         annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
         images_root = Path(constants.IMAGES_DIR)
 
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
         if not model_path.is_file():
             print(
-                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 51 first."
             )
             return False
 
         # Use the SAME list of folders that the model was trained on
         training_folders = [
-            # images_root / "dataset1" / "distorted_images_cam1",
+            images_root / "dataset1" / "distorted_images_cam1",
             images_root / "dataset2" / "distorted_images_cam1",
             images_root / "dataset3" / "distorted_images_cam1",
         ]
@@ -2326,81 +2340,136 @@ def run_roll_model_evaluation():
         return False
 
 
-def run_interactive_roll_prediction():
+def run_roll_angle_prediction():
     """
-    Stage 53: Manually test the combined roll angle model on a single image.
+    Stage 53: Use the trained model to predict roll angles for cam1 images.
     """
-    print_stage_header(53, "SINGLE IMAGE ROLL PREDICTION")
+    print_stage_header(
+        53,
+        "PREDICT ROLL ANGLES FOR CAM1",
+        "Applying trained model to cam1 distorted fisheye images.",
+    )
     try:
         project_root = Path(__file__).parent
-
-        # Path to the single combined model
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
-        if not model_path.is_file():
+        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        if not model_path.exists():
             print(
-                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+                f"ERROR: Best model not found at '{model_path}'. Please run Stage 51 first."
             )
             return False
 
-        # CONFIGURE THE TEST IMAGE HERE
-        # Define the relative path to the image you want to test.
-        image_path = (
-            project_root
-            / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
-        )
-        # END OF CONFIGURATION
-
-        if not image_path.is_file():
-            print(f"ERROR: Test image not found at '{image_path}'")
-            return False
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = RollEstimatorCNN()
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model.to(device)
-        model.eval()
-        print(f"Loaded trained model '{model_path.name}' on {device}.")
-
-        transform = transforms.Compose(
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
             [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir() and (d / "distorted_images_cam1").is_dir()
             ]
         )
 
-        print(f"Processing image: {image_path.name}")
-        with Image.open(image_path).convert("L") as img:
-            image_tensor = transform(img)
+        if not dataset_dirs:
+            print("No dataset folders with distorted images found.")
+            return False
 
-        # Apply the focus mask
-        _, height, width = image_tensor.shape
-        center_x, center_y = width // 2, height // 2
-        Y, X = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
-        scale = width / 2.5
-        dist_from_center = torch.sqrt(
-            ((X - center_x) ** 2 + (Y - center_y) ** 2).float()
-        )
-        focus_mask = torch.exp(-(dist_from_center**2) / (2 * scale**2))
-        image_tensor = image_tensor * focus_mask.unsqueeze(0)
+        all_successful = True
+        for dataset_dir in dataset_dirs:
+            print(f"\nProcessing dataset: {dataset_dir.name}")
 
-        # Add batch dimension and send to device
-        image_tensor = image_tensor.unsqueeze(0).to(device)
+            # Predict for cam1 only
+            input_dir_cam1 = dataset_dir / "distorted_images_cam1"
+            output_csv_cam1 = dataset_dir / "predicted_roll_angles_cam1.csv"
+            if (
+                roll_angle_estimator.predict_angles_for_directory(
+                    input_dir_cam1, model_path, output_csv_cam1
+                )
+                != 0
+            ):
+                all_successful = False
 
-        with torch.no_grad():
-            predicted_angle = model(image_tensor).item()
-
-        print("\nPrediction Result")
-        print(f"Predicted Roll Angle: {predicted_angle:.2f} degrees")
-        return True
-
+        return all_successful
     except Exception as e:
-        print(f"An error occurred during prediction: {e}")
+        print(f"An error occurred during roll angle prediction: {e}")
         import traceback
 
         traceback.print_exc()
         return False
+
+
+# def run_interactive_roll_prediction():
+#     """
+#     Stage 53: Manually test the combined roll angle model on a single image.
+#     """
+#     print_stage_header(53, "SINGLE IMAGE ROLL PREDICTION")
+#     try:
+#         project_root = Path(__file__).parent
+
+#         # Path to the single combined model
+#         model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+#         if not model_path.is_file():
+#             print(
+#                 f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+#             )
+#             return False
+
+#         # CONFIGURE THE TEST IMAGE HERE
+#         # Define the relative path to the image you want to test.
+#         image_path = (
+#             project_root
+#             / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
+#         )
+#         # END OF CONFIGURATION
+
+#         if not image_path.is_file():
+#             print(f"ERROR: Test image not found at '{image_path}'")
+#             return False
+
+#         device = "cuda" if torch.cuda.is_available() else "cpu"
+#         model = RollEstimatorCNN()
+#         model.load_state_dict(torch.load(model_path, map_location=device))
+#         model.to(device)
+#         model.eval()
+#         print(f"Loaded trained model '{model_path.name}' on {device}.")
+
+#         transform = transforms.Compose(
+#             [
+#                 transforms.Resize(256),
+#                 transforms.CenterCrop(224),
+#                 transforms.ToTensor(),
+#                 transforms.Normalize(mean=[0.5], std=[0.5]),
+#             ]
+#         )
+
+#         print(f"Processing image: {image_path.name}")
+#         with Image.open(image_path).convert("L") as img:
+#             image_tensor = transform(img)
+
+#         # Apply the focus mask
+#         _, height, width = image_tensor.shape
+#         center_x, center_y = width // 2, height // 2
+#         Y, X = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
+#         scale = width / 2.5
+#         dist_from_center = torch.sqrt(
+#             ((X - center_x) ** 2 + (Y - center_y) ** 2).float()
+#         )
+#         focus_mask = torch.exp(-(dist_from_center**2) / (2 * scale**2))
+#         image_tensor = image_tensor * focus_mask.unsqueeze(0)
+
+#         # Add batch dimension and send to device
+#         image_tensor = image_tensor.unsqueeze(0).to(device)
+
+#         with torch.no_grad():
+#             predicted_angle = model(image_tensor).item()
+
+#         print("\nPrediction Result")
+#         print(f"Predicted Roll Angle: {predicted_angle:.2f} degrees")
+#         return True
+
+#     except Exception as e:
+#         print(f"An error occurred during prediction: {e}")
+#         import traceback
+
+#         traceback.print_exc()
+#         return False
 
 
 def run_feature_visualization():
@@ -2412,7 +2481,7 @@ def run_feature_visualization():
         project_root = Path(__file__).parent
 
         # Path to the single combined model
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
         if not model_path.is_file():
             print(
                 f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
@@ -2506,7 +2575,7 @@ def main():
         50: ("Segment Fisheye Images for Roll CNN", run_fisheye_segmentation),
         51: ("Train Roll Angle Estimator", run_roll_angle_training),
         52: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
-        53: ("Interactive Roll Prediction", run_interactive_roll_prediction),
+        53: ("Predict Roll Angles with AI Model", run_roll_angle_prediction),
         54: ("Visualize CNN Features", run_feature_visualization),
         55: ("Fine-tune Skyline Feature Extractor", run_finetuning_stage),
     }

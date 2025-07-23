@@ -20,13 +20,11 @@ from tqdm import tqdm
 import constants
 
 
-# It contains the logic from original 'for' loop.
 def _process_single_image_wrapper(args):
     """
     Wrapper function to process a single image.
     It unpacks arguments to be used with pool.map.
     """
-    # Unpack all arguments
     (
         undistorter_instance,
         input_path,
@@ -37,7 +35,7 @@ def _process_single_image_wrapper(args):
         rectilinear_fov_degrees,
         horizontal_angle_offset_degrees,
         vertical_angle_offset_degrees,
-        rotation_degrees,
+        final_roll_degrees,
         horizon_bend_correction,
     ) = args
 
@@ -48,7 +46,6 @@ def _process_single_image_wrapper(args):
         if fisheye_image is None:
             return (f"Warning: Could not read image {filename}. Skipping.", filename)
 
-        # Call the instance method to perform the core logic
         left_view, right_view = undistorter_instance.undistort_fisheye_to_split_views(
             fisheye_image,
             output_width,
@@ -56,8 +53,8 @@ def _process_single_image_wrapper(args):
             rectilinear_fov_degrees,
             horizontal_angle_offset_degrees,
             vertical_angle_offset_degrees,
-            rotation_degrees,
-            horizon_bend_correction,
+            roll_degrees=final_roll_degrees,
+            horizon_bend_correction=horizon_bend_correction,
         )
 
         original_stem, extension = os.path.splitext(filename)
@@ -345,7 +342,7 @@ class FisheyeUndistorter:
         rectilinear_fov_degrees=90,
         horizontal_angle_offset_degrees=45,
         vertical_angle_offset_degrees=0,
-        rotation_degrees=0,
+        roll_degrees=0,
         horizon_bend_correction=0.0,
     ):  # This is the roll
         left_yaw_degrees = -horizontal_angle_offset_degrees
@@ -358,7 +355,7 @@ class FisheyeUndistorter:
             output_rectilinear_fov_degrees=rectilinear_fov_degrees,
             yaw_degrees=left_yaw_degrees,  # Virtual camera yaw for left view
             pitch_degrees=vertical_angle_offset_degrees,
-            roll_degrees=rotation_degrees,  # Virtual camera roll
+            roll_degrees=roll_degrees,  # Virtual camera roll
             horizon_bend_correction=horizon_bend_correction,
         )
 
@@ -369,7 +366,7 @@ class FisheyeUndistorter:
             output_rectilinear_fov_degrees=rectilinear_fov_degrees,
             yaw_degrees=right_yaw_degrees,  # Virtual camera yaw for right view
             pitch_degrees=vertical_angle_offset_degrees,
-            roll_degrees=rotation_degrees,  # Virtual camera roll
+            roll_degrees=roll_degrees,  # Virtual camera roll
             horizon_bend_correction=horizon_bend_correction,
         )
         return left_view, right_view
@@ -384,44 +381,90 @@ class FisheyeUndistorter:
         rectilinear_fov_degrees=90,
         horizontal_angle_offset_degrees=45,
         vertical_angle_offset_degrees=0.0,
-        rotation_degrees=0,
+        base_roll_degrees=0,
         horizon_bend_correction=0.0,
+        predicted_rolls_csv: Path = None,
+        invert_rolls: bool = False,
+        cam2_additional_static_roll_degrees: float = 0.0,
     ):
         Path(output_dir_left).mkdir(parents=True, exist_ok=True)
         Path(output_dir_right).mkdir(parents=True, exist_ok=True)
-
         image_files = [
             os.path.join(input_dir, f)
             for f in os.listdir(input_dir)
             if f.lower().endswith((".png", ".jpg", ".jpeg"))
         ]
 
-        # Prepare arguments for each worker process
-        # We need to pass the instance 'self' to the worker
-        args_list = [
-            (
-                self,
-                path,
-                output_dir_left,
-                output_dir_right,
-                output_width,
-                output_height,
-                rectilinear_fov_degrees,
-                horizontal_angle_offset_degrees,
-                vertical_angle_offset_degrees,
-                rotation_degrees,
-                horizon_bend_correction,
-            )
-            for path in image_files
-        ]
+        roll_lookup = {}
+        # Flag to indicate if AI rolls are being used
+        using_ai_rolls = False
 
-        # Use about 80% of CPU cores to leave some for system responsiveness
+        if predicted_rolls_csv and predicted_rolls_csv.exists():
+            print(f"Loading AI-predicted roll angles from {predicted_rolls_csv.name}")
+            try:
+                rolls_df = pd.read_csv(predicted_rolls_csv)
+                # MODIFICATION HERE: Create roll_lookup with image index as key
+                roll_lookup = {
+                    f"{int(row.filename):04d}": row.predicted_roll
+                    for row in rolls_df.itertuples(index=False)
+                }
+                using_ai_rolls = True
+            except Exception as e:
+                print(
+                    f"Warning: Could not load or parse roll prediction CSV. Using base rotation only. Error: {e}"
+                )
+
+        args_list = []
+        for path in image_files:
+            full_image_filename = os.path.basename(
+                path
+            )  # e.g., "distorted_cam1_0400.jpg"
+
+            # MODIFICATION HERE: Extract the image index from the full filename
+            # This logic assumes filenames are consistently structured like "prefix_index.ext"
+            # or "prefix_camera_index.ext". We want the 'index' part.
+            stem = os.path.splitext(full_image_filename)[0]  # "distorted_cam1_0400"
+
+            # Find the last numeric part after the last underscore
+            # This handles cases like "distorted_0400" or "distorted_cam1_0400"
+            parts = stem.split("_")
+            image_index = parts[-1]  # This should be "0400"
+
+            final_roll = base_roll_degrees  # Start with base roll
+
+            if using_ai_rolls:
+                ai_roll_offset = roll_lookup.get(image_index, None)
+                if ai_roll_offset is not None:  # If an AI roll exists for this index
+                    final_roll = ai_roll_offset  # Use only AI roll, override base roll
+                    if invert_rolls:
+                        final_roll *= -1
+                        final_roll += cam2_additional_static_roll_degrees
+                else:
+                    print(
+                        f"Warning: No AI roll prediction found for image index '{image_index}' (from {full_image_filename}). Using base roll."
+                    )
+
+            # If not using_ai_rolls, or if an AI roll wasn't found for a specific file, final_roll will remain base_roll_degrees
+
+            args_list.append(
+                (
+                    self,
+                    path,
+                    output_dir_left,
+                    output_dir_right,
+                    output_width,
+                    output_height,
+                    rectilinear_fov_degrees,
+                    horizontal_angle_offset_degrees,
+                    vertical_angle_offset_degrees,
+                    final_roll,  # Pass the determined final_roll
+                    horizon_bend_correction,
+                )
+            )
+
         num_processes = max(1, int(cpu_count() * 0.8))
         print(f"Starting parallel processing with {num_processes} cores...")
-
-        # Create a pool of workers and distribute the tasks
         with Pool(processes=num_processes) as pool:
-            # Use tqdm to create a progress bar for the parallel processing
             results = list(
                 tqdm(
                     pool.imap_unordered(_process_single_image_wrapper, args_list),
@@ -429,12 +472,9 @@ class FisheyeUndistorter:
                     desc=f"Processing {Path(input_dir).name}",
                 )
             )
-
-        # Log any errors that occurred in the child processes
         for error, filename in results:
             if error:
                 print(error)
-
         print(f"Finished processing batch for {Path(input_dir).name}.")
 
     def save_comparison_plot(

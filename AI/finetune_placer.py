@@ -14,15 +14,14 @@ from AI.triplet_dataset import SkylineTripletDataset
 
 
 class EmbeddingNet(nn.Module):
-    """
-    A network to generate embeddings from skyline images.
-    It uses a pre-trained MobileNetV2, modified only at the final layer for embedding output.
-    """
-
-    def __init__(self, embedding_dim=128):
+    def __init__(self, embedding_dim=128, freeze_layers=14):
         super(EmbeddingNet, self).__init__()
-        # Load the default pre-trained MobileNetV2
         self.backbone = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+
+        for i, child in enumerate(self.backbone.features.children()):
+            if i < freeze_layers:
+                for param in child.parameters():
+                    param.requires_grad = False
 
         num_features = self.backbone.last_channel
         self.backbone.classifier = nn.Sequential(
@@ -38,92 +37,147 @@ class EmbeddingNet(nn.Module):
 def train_placer_model(
     dataset_dir: Path,
     model_save_path: Path,
-    num_epochs: int = 20,
-    lr: float = 1e-4,
-    batch_size: int = 16,
+    num_epochs: int,
+    lr: float,
+    batch_size: int,
+    patience: int = 5,
 ):
-    """
-    Main function to run the training process.
-    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 1. Define the transformations
-    image_transform = transforms.Compose(
+    train_transform = transforms.Compose(
         [
-            # This transform randomly crops the image while varying the aspect ratio
-            # before resizing, making the model more robust to distortion.
-            transforms.RandomResizedCrop(
-                size=(224, 224), scale=(0.8, 1.0), ratio=(1.3, 5.5), antialias=True
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomAffine(
+                degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05)
             ),
+            transforms.Resize((224, 224), antialias=True),
             transforms.ToTensor(),
             transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
-    # 2. Initialize the Dataset and DataLoader
-    # Note: For training, we use the full panorama. The learned features will then be
-    # extracted from windows during inference
-    triplet_dataset = SkylineTripletDataset(
-        dataset_dir=dataset_dir, transform=image_transform
+    val_transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224), antialias=True),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
     )
+
+    train_dataset = SkylineTripletDataset(
+        dataset_dir=dataset_dir, transform=train_transform, mode="train"
+    )
+    val_dataset = SkylineTripletDataset(
+        dataset_dir=dataset_dir, transform=val_transform, mode="val"
+    )
+
     train_loader = DataLoader(
-        triplet_dataset,
+        train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
     )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
 
-    # 3. Initialize the Model, Loss, and Optimizer
     model = EmbeddingNet(embedding_dim=128).to(device)
-    loss_fn = nn.TripletMarginLoss(margin=1.0)
-    optimizer = optim.AdamW(model.parameters(), lr=lr)
+    loss_fn = nn.TripletMarginLoss(margin=0.5)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
 
-    print("Starting model fine-tuning...")
-    # 4. The Training Loop
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+    best_model_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
+
+    if best_model_path.exists():
+        print(f"Found existing best model at {best_model_path}. Resuming training.")
+        model.load_state_dict(torch.load(best_model_path, map_location=device))
+    else:
+        print("No existing best model found. Starting training from scratch.")
+
+    print("Starting model fine-tuning with validation...")
     for epoch in range(num_epochs):
         model.train()
-        running_loss = 0.0
-
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")
+        train_running_loss = 0.0
+        progress_bar = tqdm(
+            train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Train]"
+        )
         for anchor, positive, negative in progress_bar:
             anchor, positive, negative = (
                 anchor.to(device),
                 positive.to(device),
                 negative.to(device),
             )
-
-            anchor_embedding = model(anchor)
-            positive_embedding = model(positive)
-            negative_embedding = model(negative)
-
+            anchor_embedding, positive_embedding, negative_embedding = (
+                model(anchor),
+                model(positive),
+                model(negative),
+            )
             loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
-
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            running_loss += loss.item()
+            train_running_loss += loss.item()
             progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
-        epoch_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch + 1} Summary - Average Loss: {epoch_loss:.4f}")
+        avg_train_loss = train_running_loss / len(train_loader)
 
-    # 5. Save the fine-tuned model weights
-    model_save_path.parent.mkdir(parents=True, exist_ok=True)
-    # We save the entire model's state dict, which includes the backbone and new classifier
-    torch.save(model.state_dict(), model_save_path)
-    print(f"Fine-tuned model saved to: {model_save_path}")
+        model.eval()
+        val_running_loss = 0.0
+        with torch.no_grad():
+            for anchor, positive, negative in tqdm(
+                val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Val]"
+            ):
+                anchor, positive, negative = (
+                    anchor.to(device),
+                    positive.to(device),
+                    negative.to(device),
+                )
+                anchor_embedding, positive_embedding, negative_embedding = (
+                    model(anchor),
+                    model(positive),
+                    model(negative),
+                )
+                loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
+                val_running_loss += loss.item()
+
+        avg_val_loss = val_running_loss / len(val_loader)
+        print(
+            f"Epoch {epoch + 1} Summary - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}"
+        )
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), best_model_path)
+            print(
+                f"Validation loss improved. Saved best model to {best_model_path.name}"
+            )
+        else:
+            epochs_no_improve += 1
+            print(f"Validation loss did not improve for {epochs_no_improve} epoch(s).")
+
+        if epochs_no_improve >= patience:
+            print(
+                f"Early stopping triggered after {patience} epochs without improvement."
+            )
+            break
+
+    print(
+        f"\nTraining complete. Best model saved to {best_model_path.name} with validation loss: {best_val_loss:.4f}"
+    )
 
 
 def run_finetuning_stage():
-    """
-    Wrapper function to be called as a stage from main.py.
-    """
     try:
-        # Find available datasets that have the required data
         datasets_root_dir = Path(constants.IMAGES_DIR)
         available_datasets = sorted(
             [
@@ -132,12 +186,9 @@ def run_finetuning_stage():
                 if d.is_dir() and (d / "dem_skylines_paired").is_dir()
             ]
         )
-
         if not available_datasets:
             print("No datasets found with paired DEM skylines needed for training.")
             return False
-
-        # Interactive selection of the dataset
         selected_dir = None
         while True:
             print("\nPlease select a dataset to use for fine-tuning:")
@@ -163,9 +214,10 @@ def run_finetuning_stage():
         train_placer_model(
             dataset_dir=selected_dir,
             model_save_path=model_save_path,
-            num_epochs=25,
-            lr=1e-4,
-            batch_size=16,
+            num_epochs=50,
+            lr=1e-5,  # Use a low learning rate for continued refinement
+            batch_size=32,
+            patience=10,
         )
         return True
     except Exception as e:

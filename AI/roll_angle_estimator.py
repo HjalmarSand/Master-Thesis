@@ -13,6 +13,8 @@ from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, random_split
 from tqdm import tqdm
 
+from utils.utility import get_original_numbered_file_name
+
 
 # 1. Custom PyTorch Dataset
 class RollAngleDataset(Dataset):
@@ -24,17 +26,17 @@ class RollAngleDataset(Dataset):
     def __init__(self, image_dirs: List[Path], annotations_csv: Path, transform=None):
         self.transform = transform
 
-        # 1. Load annotations and create an efficient lookup dictionary
         annotations_df = pd.read_csv(annotations_csv)
         self.angle_lookup = {
-            (row.dataset, row.index): row.angle for row in annotations_df.itertuples()
+            (row.dataset, row.index): row.angle
+            for row in annotations_df.itertuples(index=False)
         }
 
-        # 2. Scan all provided directories and create a unified list of data points
         self.data_points = []
         for image_dir in image_dirs:
-            # Extract the dataset number from the parent folder name (e.g., 'dataset1' -> 1)
+            # --- CORRECTED LOGIC: Reverted to parsing the dataset number ---
             try:
+                # Extracts the number from the parent folder name (e.g., 'dataset1' -> 1)
                 dataset_num_str = re.search(r"(\d+)", image_dir.parent.name).group(1)
                 dataset_num = int(dataset_num_str)
             except (AttributeError, ValueError):
@@ -43,19 +45,17 @@ class RollAngleDataset(Dataset):
                 )
                 continue
 
-            # Find all images in the current directory
             extensions = ["*.png", "*.jpg", "*.jpeg"]
             image_paths = []
             for ext in extensions:
                 image_paths.extend(image_dir.glob(ext))
 
-            # Match each image with its annotation
             for path in sorted(image_paths):
                 match = re.search(r"(\d{4})", path.name)
                 if match:
                     image_idx = int(match.group(1))
+                    # Use the parsed integer for the lookup
                     lookup_key = (dataset_num, image_idx)
-
                     if lookup_key in self.angle_lookup:
                         angle = self.angle_lookup[lookup_key]
                         self.data_points.append((path, angle))
@@ -69,22 +69,24 @@ class RollAngleDataset(Dataset):
         return len(self.data_points)
 
     def __getitem__(self, index):
-        # The rest of the function logic is the same
         img_path, roll_angle = self.data_points[index]
         image = Image.open(img_path).convert("L")
 
         if self.transform:
             image = self.transform(image)
 
-        _, height, width = image.shape
-        center_x, center_y = width // 2, height // 2
-        Y, X = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
-        scale = width / 2.5
-        dist_from_center = torch.sqrt(
-            ((X - center_x) ** 2 + (Y - center_y) ** 2).float()
-        )
-        focus_mask = torch.exp(-(dist_from_center**2) / (2 * scale**2))
-        image = image * focus_mask.unsqueeze(0)
+        if isinstance(image, torch.Tensor):
+            _, height, width = image.shape
+            center_x, center_y = width // 2, height // 2
+            Y, X = torch.meshgrid(
+                torch.arange(height), torch.arange(width), indexing="ij"
+            )
+            scale = width / 2.5
+            dist_from_center = torch.sqrt(
+                ((X - center_x) ** 2 + (Y - center_y) ** 2).float()
+            )
+            focus_mask = torch.exp(-(dist_from_center**2) / (2 * scale**2))
+            image = image * focus_mask.unsqueeze(0).to(image.device)
 
         return (image, torch.tensor(float(roll_angle)))
 
@@ -94,26 +96,22 @@ class RollEstimatorCNN(nn.Module):
     def __init__(self):
         super(RollEstimatorCNN, self).__init__()
         self.conv_layers = nn.Sequential(
-            # Block 1
-            nn.Conv2d(1, 16, kernel_size=5, stride=2, padding=2),  # -> 16x112x112
+            nn.Conv2d(1, 16, kernel_size=5, stride=2, padding=2),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # -> 16x56x56
-            # Block 2
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),  # -> 32x56x56
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # -> 32x28x28
-            # Block 3
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),  # -> 64x28x28
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # -> 64x14x14
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # -> 128x14x14
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # -> 128x7x7
+            nn.MaxPool2d(kernel_size=2, stride=2),
         )
         self.flatten = nn.Flatten()
-        # --- UPDATE THE INPUT SIZE FOR THE LINEAR LAYER ---
         self.fc_layers = nn.Sequential(
-            nn.Linear(128 * 7 * 7, 256),  # Was 64 * 14 * 14
+            nn.Linear(128 * 7 * 7, 256),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(256, 1),
@@ -126,9 +124,9 @@ class RollEstimatorCNN(nn.Module):
         return x
 
 
-# 3. Main Training Function
+# 3. Main Training Function (Modified)
 def train_roll_estimator(
-    image_dirs: List[Path],  # Takes a list of directories
+    image_dirs: List[Path],
     annotation_csv: Path,
     model_save_path: Path,
     num_epochs: int = 30,
@@ -149,13 +147,27 @@ def train_roll_estimator(
         ]
     )
 
-    # The Dataset class now handles the combined data from all directories
+    # --- DATA AUGMENTATION FOR TRAINING ---
+    train_transform = transforms.Compose(
+        [
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3),
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5], std=[0.5]),
+        ]
+    )
+
     full_dataset = RollAngleDataset(
-        annotations_csv=annotation_csv, image_dirs=image_dirs, transform=transform
+        annotations_csv=annotation_csv, image_dirs=image_dirs
     )
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+    train_dataset.dataset.transform = train_transform
+    val_dataset.dataset.transform = transform
 
     print(f"Found {len(full_dataset)} annotated images in the directory.")
     print(f"Training set size: {len(train_dataset)}")
@@ -168,7 +180,13 @@ def train_roll_estimator(
 
     model = RollEstimatorCNN().to(device)
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=learning_rate, weight_decay=1e-5
+    )
+
+    # --- VARIABLES FOR SAVING BEST MODEL ---
+    best_val_loss = float("inf")
+    best_model_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
 
     print(f"\nTraining for {num_epochs} epochs...")
     for epoch in range(num_epochs):
@@ -189,7 +207,7 @@ def train_roll_estimator(
         val_loss = 0.0
         with torch.no_grad():
             for images, angles in tqdm(
-                val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Val]  "
+                val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Val]"
             ):
                 images, angles = (
                     images.to(device),
@@ -205,9 +223,90 @@ def train_roll_estimator(
             f"Epoch [{epoch + 1:02d}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}"
         )
 
-    model_save_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), model_save_path)
-    print(f"\nTraining complete. Model saved to '{model_save_path}'")
+        # --- LOGIC TO SAVE BEST MODEL ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), best_model_path)
+            print(
+                f"Validation loss improved. Saved best model to {best_model_path.name}"
+            )
+
+    print(
+        f"\nTraining complete. Best model saved to {best_model_path.name} with validation loss: {best_val_loss:.4f}"
+    )
+    return 0
+
+
+def predict_angles_for_directory(
+    image_dir: Path, model_path: Path, output_csv_path: Path
+):
+    """
+    Loads a trained model and predicts roll angles for all images in a directory,
+    saving the results to a CSV file.
+    """
+    print(f"\n--- Predicting Roll Angles for {image_dir.parent.name} ---")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
+    if not model_path.exists():
+        print(f"ERROR: Model file not found at '{model_path}'.")
+        return 1
+
+    model = RollEstimatorCNN()
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
+    model.eval()
+    print(f"Loaded trained model from '{model_path.name}'")
+
+    # Use the standard, non-augmented transform for prediction
+    transform = transforms.Compose(
+        [
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5], std=[0.5]),
+        ]
+    )
+
+    image_paths = sorted(list(image_dir.glob("*.jpg")) + list(image_dir.glob("*.png")))
+    if not image_paths:
+        print(f"No images found in {image_dir}")
+        return 1
+
+    results = []
+    with torch.no_grad():
+        for img_path in tqdm(image_paths, desc="Predicting Angles"):
+            image = Image.open(img_path).convert("L")
+            tensor = transform(image)
+
+            # Apply the focus mask
+            _, height, width = tensor.shape
+            center_x, center_y = width // 2, height // 2
+            Y, X = torch.meshgrid(
+                torch.arange(height), torch.arange(width), indexing="ij"
+            )
+            scale = width / 2.5
+            dist_from_center = torch.sqrt(
+                ((X - center_x) ** 2 + (Y - center_y) ** 2).float()
+            )
+            focus_mask = torch.exp(-(dist_from_center**2) / (2 * scale**2))
+            tensor = tensor * focus_mask.unsqueeze(0)
+
+            tensor = tensor.unsqueeze(0).to(device)
+
+            predicted_angle = model(tensor).item()
+            results.append(
+                {
+                    "dataset": image_dir.parent.name,
+                    "filename": get_original_numbered_file_name(img_path.name)[:-4],
+                    "predicted_roll": predicted_angle,
+                }
+            )
+
+    df = pd.DataFrame(results)
+    output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_csv_path, index=False, float_format="%.4f")
+    print(f"Predictions saved to {output_csv_path}")
     return 0
 
 
