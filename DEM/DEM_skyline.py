@@ -1,78 +1,107 @@
 import json
-import os
 import sys
-from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import List, Tuple
 
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
-
+import laspy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pdal
-from scipy import ndimage
+from rtree import index
 from scipy.signal import medfilt
 from tqdm import tqdm
 
 import constants
 
+project_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root))
+
 # This global variable will be initialized in each worker process
 global_constants = {}
 
 
-def find_laz_files() -> List[Path]:
-    """Find all LAZ files in the configured directory."""
-    laz_directory = Path(constants.LIDAR_DATA_DIR)
-    print(f"Searching for LAZ files in directory: {laz_directory}")
-    if not laz_directory.exists():
-        raise FileNotFoundError(f"Directory not found: {laz_directory}")
-    laz_files = sorted(
-        list(laz_directory.glob("*.laz")) + list(laz_directory.glob("*.LAZ"))
-    )
+def create_lidar_chunks(
+    source_dir: Path,
+    chunk_dir: Path,
+    manifest_path: Path,
+    chunk_tile_size: int = 500,  # Changed from capacity to tile size in meters
+):
+    """
+    Splits large LAZ files into smaller, square chunks (tiles) and creates a
+    manifest file with their spatial bounds. Skips files already in the manifest.
+    """
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    source_files = find_laz_files(source_dir)
+
+    all_chunk_data = {}
+    if manifest_path.exists():
+        with open(manifest_path, "r") as f:
+            all_chunk_data = json.load(f)
+        print(f"Loaded {len(all_chunk_data)} existing chunk records from manifest.")
+
+    processed_stems = {key.split("_chunk_")[0] for key in all_chunk_data.keys()}
+
+    for laz_file in tqdm(source_files, desc="Chunking LAZ Files"):
+        file_id = laz_file.stem
+        if file_id in processed_stems:
+            continue
+
+        print(f"\nProcessing and chunking '{laz_file.name}'...")
+        # Using a slightly different output template for tiled chunks
+        output_template = chunk_dir / f"{file_id}_chunk_#.laz"
+        pipeline_json = {
+            "pipeline": [
+                str(laz_file),
+                {
+                    "type": "filters.splitter",
+                    "length": chunk_tile_size,  # FIXED: Use 'length' for spatial tiling
+                },
+                {
+                    "type": "writers.las",
+                    "filename": str(output_template),
+                },
+            ]
+        }
+        pipeline = pdal.Pipeline(json.dumps(pipeline_json))
+        pipeline.execute()
+
+        # Update glob pattern to match the new tiled output format
+        created_chunks = sorted(chunk_dir.glob(f"{file_id}_chunk_*.laz"))
+        for chunk_path in created_chunks:
+            try:
+                with laspy.open(chunk_path) as chunk_file:
+                    header = chunk_file.header
+                    chunk_bounds = {
+                        "min_x": header.x_min,
+                        "max_x": header.x_max,
+                        "min_y": header.y_min,
+                        "max_y": header.y_max,
+                    }
+                all_chunk_data[chunk_path.stem] = {
+                    "path": str(chunk_path),
+                    "bounds": chunk_bounds,
+                }
+            except Exception as e:
+                print(f"Warning: Could not read header for {chunk_path.name}: {e}")
+
+    with open(manifest_path, "w") as f:
+        json.dump(all_chunk_data, f, indent=2)
+    print(f"Chunking manifest updated. Total chunks: {len(all_chunk_data)}")
+
+
+def find_laz_files(directory: Path) -> List[Path]:
+    """
+    Find all LAZ files in the specified directory.
+    """
+    print(f"Searching for LAZ files in directory: {directory}")
+    if not directory.exists():
+        raise FileNotFoundError(f"Directory not found: {directory}")
+    laz_files = sorted(list(directory.glob("*.laz")) + list(directory.glob("*.LAZ")))
     if not laz_files:
-        raise FileNotFoundError(f"No LAZ files found in directory: {laz_directory}")
+        raise FileNotFoundError(f"No LAZ files found in directory: {directory}")
     print(f"Found {len(laz_files)} LAZ files.")
     return laz_files
-
-
-def check_file_relevance_from_json(
-    file_path: Path, viewpoint_coords: Tuple[float, float, float]
-) -> bool:
-    """
-    DEBUG VERSION: Checks if a LAZ file's bounds are relevant to the viewpoint
-    and prints its reasoning.
-    """
-    vp_x, vp_y, _ = viewpoint_coords
-    new_name = f"{file_path.stem}_tile.json"
-    json_path = file_path.with_name(new_name)
-
-    # Print the values we're using for the check
-    search_radius = constants.SEARCH_RADIUS
-
-    try:
-        if not json_path.exists():
-            return True
-
-        with open(json_path, "r") as f:
-            data = json.load(f)
-
-        coords = data["features"][0]["geometry"]["coordinates"][0][:-1]
-        x_coords, y_coords = [c[0] for c in coords], [c[1] for c in coords]
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-
-        closest_x = max(min_x, min(vp_x, max_x))
-        closest_y = max(min_y, min(vp_y, max_y))
-        min_dist = np.sqrt((vp_x - closest_x) ** 2 + (vp_y - closest_y) ** 2)
-
-        is_relevant = min_dist <= search_radius
-
-        return is_relevant
-
-    except Exception as e:
-        return True
 
 
 def generate_skyline_mask_array(
@@ -96,7 +125,7 @@ def generate_skyline_mask_array(
     )
 
     # Smooth the skyline profile to reduce noise
-    filtered_elevations = medfilt(interpolated_elevations, kernel_size=29)
+    filtered_elevations = medfilt(interpolated_elevations, kernel_size=19)
 
     # Roll the array to align with a standard panorama projection (center is 0 degrees azimuth)
     pixels_to_roll = -int(output_width / 2)
@@ -117,72 +146,6 @@ def generate_skyline_mask_array(
         mask[0:y_sky, x] = 255  # 255 represents the sky
 
     return mask
-
-
-def init_worker(config: dict):
-    """Initializes each worker process with shared configuration."""
-    global global_constants
-    global_constants = config
-
-
-def process_viewpoint_and_file(task: Tuple) -> Tuple:
-    """
-    Worker function that processes a SINGLE LAZ file for a SINGLE viewpoint.
-    This is the core unit of work for the parallel processing pool.
-    """
-    point_id, viewpoint_coords, file_path = task
-    try:
-        # Load constants provided by the init_worker function
-        search_radius = global_constants["SEARCH_RADIUS"]
-        min_distance = global_constants["MIN_DISTANCE"]
-
-        # Define the bounding box for the PDAL crop filter
-        vp_x, vp_y, vp_z = viewpoint_coords
-        min_x, max_x = vp_x - search_radius, vp_x + search_radius
-        min_y, max_y = vp_y - search_radius, vp_y + search_radius
-
-        pipeline_json = {
-            "pipeline": [
-                {"type": "readers.las", "filename": str(file_path)},
-                {
-                    "type": "filters.crop",
-                    "bounds": f"([{min_x}, {max_x}],[{min_y}, {max_y}])",
-                },
-            ]
-        }
-        pipeline = pdal.Pipeline(json.dumps(pipeline_json))
-        if pipeline.execute() == 0:
-            return (point_id, None)  # No points read
-
-        points = pipeline.arrays[0]
-        if len(points) == 0:
-            return (point_id, None)
-
-        # Calculate coordinates relative to the viewpoint
-        rel_x = points["X"] - vp_x
-        rel_y = points["Y"] - vp_y
-        rel_z = points["Z"] - vp_z
-
-        horizontal_dist = np.sqrt(rel_x**2 + rel_y**2)
-        valid_mask = horizontal_dist > min_distance
-
-        if not np.any(valid_mask):
-            return (point_id, None)
-
-        # Calculate azimuth and elevation for each valid point
-        azimuth_deg = (
-            np.degrees(np.arctan2(rel_x[valid_mask], rel_y[valid_mask])) + 360
-        ) % 360
-        elevation_deg = np.degrees(
-            np.arctan2(rel_z[valid_mask], horizontal_dist[valid_mask])
-        )
-
-        # Return the raw data for aggregation in the main process
-        return (point_id, (azimuth_deg, elevation_deg))
-
-    except Exception:
-        # Silently fail to avoid flooding console with errors from many workers
-        return (point_id, None)
 
 
 def create_and_save_grid(
@@ -246,81 +209,6 @@ def visualize_single_skyline(db_path: Path, point_id: str):
         plt.show()
 
 
-def generate_skyline_for_single_point(
-    viewpoint_coords: Tuple[float, float, float],
-) -> np.ndarray:
-    """
-    Generates a single skyline mask for a specific coordinate pair on-the-fly.
-    This encapsulates the logic from the main pipeline's Stage 12 for one point.
-    """
-    point_id = f"validation_vp_{viewpoint_coords[0]:.0f}_{viewpoint_coords[1]:.0f}"
-    print(f"\nGenerating DEM skyline for viewpoint: {point_id}...")
-
-    all_laz_files = find_laz_files()
-
-    # 1. Find relevant LAZ files and create tasks
-    tasks = []
-    for laz_file in all_laz_files:
-        if check_file_relevance_from_json(laz_file, viewpoint_coords):
-            tasks.append((point_id, viewpoint_coords, laz_file))
-
-    if not tasks:
-        print("No relevant LAZ files found for this coordinate.")
-        return np.zeros(
-            (constants.PANORAMA_IMG_HEIGHT, constants.PANORAMA_IMG_WIDTH),
-            dtype=np.uint8,
-        )
-
-    print(f"Found {len(tasks)} relevant LAZ files to process for this point.")
-
-    # 2. Run workers in parallel
-    worker_config = {
-        "SEARCH_RADIUS": constants.SEARCH_RADIUS,
-        "ANGLE_STEP": constants.ANGLE_STEP,
-        "MIN_DISTANCE": constants.MIN_DISTANCE,
-    }
-    num_processes = max(1, cpu_count() - 6)
-    partial_results = []
-    with Pool(
-        processes=num_processes, initializer=init_worker, initargs=(worker_config,)
-    ) as pool:
-        iterator = pool.imap_unordered(process_viewpoint_and_file, tasks)
-        for result in tqdm(iterator, total=len(tasks), desc="Processing"):
-            if result and result[1] is not None:
-                partial_results.append(result)
-
-    # 3. Aggregate results
-    num_bins = int(360 / constants.ANGLE_STEP)
-    aggregated_elevations = np.full(num_bins, 0.0)
-    for _, (azimuths, elevations) in partial_results:
-        df = pd.DataFrame({"azimuth": azimuths, "elevation": elevations})
-        angle_labels = np.arange(num_bins)
-        angle_bin_edges = np.linspace(0, 360, num_bins + 1)
-        df["bin"] = pd.cut(
-            df["azimuth"],
-            bins=angle_bin_edges,
-            labels=angle_labels,
-            right=False,
-            include_lowest=True,
-        )
-        max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
-        new_maxes = np.full(num_bins, 0.0)
-        new_maxes[max_in_bin.index] = max_in_bin.values
-        aggregated_elevations = np.maximum(aggregated_elevations, new_maxes)
-
-    # 4. Generate final mask array
-    angles = np.linspace(0, 360, num_bins, endpoint=False)
-    final_mask = generate_skyline_mask_array(
-        angles,
-        aggregated_elevations,
-        constants.PANORAMA_IMG_WIDTH,
-        constants.PANORAMA_IMG_HEIGHT,
-    )
-
-    print("Single DEM skyline generated.")
-    return final_mask
-
-
 def calculate_skyline_similarity(dem_mask: np.ndarray, real_mask: np.ndarray) -> float:
     """
     Calculates the Intersection over Union (IoU) score between two skyline masks.
@@ -378,64 +266,172 @@ def visualize_comparison(
     plt.close(fig)
 
 
-def process_tile_for_multiple_viewpoints(task: Tuple) -> List[Tuple]:
+def process_viewpoint_against_chunks(task: tuple) -> tuple[str, np.ndarray | None]:
     """
-    A tile-centric worker. It loads one LAZ file and processes all relevant
-    viewpoints against it.
+    Worker function to generate a complete skyline for a SINGLE viewpoint by
+    iterating through all relevant LiDAR chunks. This is the memory-safe worker.
     """
-    laz_file_path, viewpoints = task
+    point_id, viewpoint_coords, chunk_paths = task
+    vp_x, vp_y, vp_z = viewpoint_coords
 
-    # 1. Load the entire LAZ file into memory ONCE
-    try:
-        pipeline = pdal.Reader.las(filename=str(laz_file_path)).pipeline()
-        pipeline.execute()
-        points = pipeline.arrays[0]
-        if len(points) == 0:
-            return []
-    except Exception as e:
-        print(f"Warning: Failed to load {laz_file_path.name}: {e}")
-        return []
-
-    # 2. Process each viewpoint against the in-memory point cloud
-    results = []
     num_bins = int(360 / constants.ANGLE_STEP)
-    min_distance = constants.MIN_DISTANCE
+    min_distance_sq = constants.MIN_DISTANCE**2
 
-    for point_id, viewpoint_coords in viewpoints:
-        vp_x, vp_y, vp_z = viewpoint_coords
+    # We still initialize with -999.0 to correctly calculate maximums,
+    # especially for points with negative elevation (e.g., water).
+    final_skyline = np.full(num_bins, -999.0, dtype=np.float32)
 
-        # Calculate relative coordinates
-        rel_x, rel_y, rel_z = points["X"] - vp_x, points["Y"] - vp_y, points["Z"] - vp_z
-        horizontal_dist = np.sqrt(rel_x**2 + rel_y**2)
-        valid_mask = horizontal_dist > min_distance
+    try:
+        for chunk_path in chunk_paths:
+            pipeline_json = f'["{str(chunk_path)}"]'
+            pipeline = pdal.Pipeline(pipeline_json)
+            if pipeline.execute() == 0:
+                continue
 
-        if not np.any(valid_mask):
+            points = pipeline.arrays[0]
+            if len(points) == 0:
+                continue
+
+            rel_x = points["X"] - vp_x
+            rel_y = points["Y"] - vp_y
+            horizontal_dist_sq = rel_x**2 + rel_y**2
+
+            valid_mask = horizontal_dist_sq > min_distance_sq
+            if not np.any(valid_mask):
+                continue
+
+            valid_rel_x = rel_x[valid_mask]
+            valid_rel_y = rel_y[valid_mask]
+            valid_rel_z = points["Z"][valid_mask] - vp_z
+            valid_dist = np.sqrt(horizontal_dist_sq[valid_mask])
+
+            azimuth_deg = (np.degrees(np.arctan2(valid_rel_x, valid_rel_y)) + 360) % 360
+            elevation_deg = np.degrees(np.arctan2(valid_rel_z, valid_dist))
+
+            angle_bin_edges = np.linspace(0, 360, num_bins + 1)
+            bins = np.digitize(azimuth_deg, bins=angle_bin_edges) - 1
+            bins = np.clip(bins, 0, num_bins - 1)
+
+            np.maximum.at(final_skyline, bins, elevation_deg)
+
+        if np.any(final_skyline > -999.0):
+            # *** NEW LINE: Before returning, set all remaining -999.0 values to 0.0 ***
+            final_skyline[final_skyline == -999.0] = 0.0
+            return (point_id, final_skyline)
+        else:
+            return (point_id, None)
+
+    except Exception:
+        return (point_id, None)
+
+
+def create_simplified_chunks(
+    raw_chunk_dir: Path, simplified_chunk_dir: Path, pipeline_template_path: Path
+):
+    """
+    Applies a PDAL pipeline to each raw chunk to create a simplified version.
+    Includes resume logic to skip already processed chunks.
+    """
+    simplified_chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(pipeline_template_path, "r") as f:
+        pipeline_template = json.load(f)
+
+    raw_chunks = sorted(list(raw_chunk_dir.glob("*.laz")))
+    if not raw_chunks:
+        print(f"Warning: No raw chunks found in {raw_chunk_dir}")
+        return
+
+    print(f"Found {len(raw_chunks)} raw chunks to process.")
+
+    for raw_chunk_path in tqdm(raw_chunks, desc="Simplifying Chunks"):
+        simplified_chunk_path = simplified_chunk_dir / raw_chunk_path.name
+
+        # Resume logic: skip if the output file already exists
+        if simplified_chunk_path.exists():
             continue
 
-        # Calculate azimuth and elevation
-        azimuth_deg = (
-            np.degrees(np.arctan2(rel_x[valid_mask], rel_y[valid_mask])) + 360
-        ) % 360
-        elevation_deg = np.degrees(
-            np.arctan2(rel_z[valid_mask], horizontal_dist[valid_mask])
+        # Modify the pipeline template with the correct file paths
+        pipeline_template[0]["filename"] = str(raw_chunk_path)
+        pipeline_template[-1]["filename"] = str(simplified_chunk_path)
+
+        try:
+            pipeline = pdal.Pipeline(json.dumps(pipeline_template))
+            pipeline.execute()
+        except Exception as e:
+            print(f"Error processing {raw_chunk_path.name}: {e}")
+
+
+def generate_skyline_for_single_point(
+    viewpoint_coords: Tuple[float, float, float],
+    simplified_manifest_path: Path,
+) -> np.ndarray | None:
+    """
+    Generates a single skyline mask for a specific coordinate pair on-the-fly
+    using the modern, efficient chunk-based method.
+    """
+    point_id = f"on_the_fly_vp_{viewpoint_coords[0]:.0f}_{viewpoint_coords[1]:.0f}"
+    print(f"\nGenerating DEM skyline for viewpoint: {point_id}...")
+
+    if not simplified_manifest_path.exists():
+        print(
+            f"ERROR: Simplified chunk manifest not found at '{simplified_manifest_path}'"
         )
+        print("Please run Stage 10 to prepare LiDAR assets first.")
+        return None
 
-        # Aggregate results for this viewpoint
-        df = pd.DataFrame({"azimuth": azimuth_deg, "elevation": elevation_deg})
-        angle_labels = np.arange(num_bins)
-        angle_bin_edges = np.linspace(0, 360, num_bins + 1)
-        df["bin"] = pd.cut(
-            df["azimuth"],
-            bins=angle_bin_edges,
-            labels=angle_labels,
-            right=False,
-            include_lowest=True,
-        )
-        max_in_bin = df.groupby("bin", observed=True)["elevation"].max()
+    # 1. Load manifest and build R-tree index
+    with open(simplified_manifest_path, "r") as f:
+        chunk_manifest = json.load(f)
 
-        skyline = np.full(num_bins, 0.0)  # Use 0.0 as default for flat horizon
-        skyline[max_in_bin.index] = max_in_bin.values
+    p = index.Property(dimension=2)
+    idx = index.Index(properties=p)
+    chunk_paths_map = {}
+    for i, (stem, data) in enumerate(chunk_manifest.items()):
+        b = data["bounds"]
+        idx.insert(i, (b["min_x"], b["min_y"], b["max_x"], b["max_y"]))
+        chunk_paths_map[i] = Path(data["path"])
 
-        results.append((point_id, skyline))
+    # 2. Find relevant chunks for the viewpoint
+    vp_x, vp_y, _ = viewpoint_coords
+    search_radius = constants.SEARCH_RADIUS
+    search_bounds = (
+        vp_x - search_radius,
+        vp_y - search_radius,
+        vp_x + search_radius,
+        vp_y + search_radius,
+    )
+    relevant_indices = list(idx.intersection(search_bounds))
 
-    return results
+    if not relevant_indices:
+        print("No relevant LiDAR chunks found for this coordinate.")
+        return None
+
+    relevant_paths = [chunk_paths_map[i] for i in relevant_indices]
+    print(f"Found {len(relevant_paths)} relevant chunks to process.")
+
+    # 3. Create and run the task
+    # Note: we pass the constants directly since we are not using a multiprocessing Pool here
+    task = (point_id, viewpoint_coords, relevant_paths)
+
+    # We process this single point directly
+    skyline_result = process_viewpoint_against_chunks(task)
+
+    if skyline_result is None or skyline_result[1] is None:
+        print("Skyline generation failed for this point (no valid points found).")
+        return None
+
+    _, skyline_vector = skyline_result
+
+    # 4. Generate final mask array
+    num_bins = len(skyline_vector)
+    angles = np.linspace(0, 360, num_bins, endpoint=False)
+    final_mask = generate_skyline_mask_array(
+        angles,
+        skyline_vector,
+        constants.PANORAMA_IMG_WIDTH,
+        constants.PANORAMA_IMG_HEIGHT,
+    )
+
+    print("Single DEM skyline generated successfully.")
+    return final_mask

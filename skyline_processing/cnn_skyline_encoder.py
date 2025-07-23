@@ -13,6 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import constants
+from AI.finetune_placer import EmbeddingNet
 
 
 class CnnEncoder:
@@ -20,30 +21,38 @@ class CnnEncoder:
     Encodes binary skyline arrays into spatially-aware feature vectors.
     """
 
-    def __init__(self, pool_target: tuple = (1, 1)):
+    def __init__(self, pool_target: tuple = (1, 1), model_path: Path = None):
         """
         Initializes the encoder.
         Args:
-            pool_target (tuple): The grid size to pool features to, e.g., (1, 1) for
-                                global pooling or (2, 2) for a 4-chunk grid.
+            pool_target (tuple): The grid size to pool features to.
+            model_path (Path, optional): Path to a fine-tuned model state_dict.
+                                        If None, uses default MobileNetV2.
         """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.pool_target = pool_target
-        print(
-            f"Initializing CNN Encoder on device: {self.device} with {pool_target} pooling grid."
-        )
+        print(f"Initializing CNN Encoder on device: {self.device}")
 
-        weights = models.MobileNet_V2_Weights.DEFAULT
-        model = models.mobilenet_v2(weights=weights)
-        self.feature_extractor = model.features.to(self.device)
+        if model_path and model_path.exists():
+            print(f"Loading fine-tuned model from: {model_path}")
+            # Load the architecture that matches the saved weights
+            model = EmbeddingNet(embedding_dim=128).to(self.device)
+            model.load_state_dict(torch.load(model_path, map_location=self.device))
+            # For inference, we only need the feature extraction part
+            self.feature_extractor = model.backbone.features
+        else:
+            print("Fine-tuned model not found. Using default MobileNetV2.")
+            weights = models.MobileNet_V2_Weights.DEFAULT
+            model = models.mobilenet_v2(weights=weights)
+            self.feature_extractor = model.features.to(self.device)
+
         self.feature_extractor.eval()
-
         self.pool = torch.nn.functional.adaptive_avg_pool2d
 
         self.transform = transforms.Compose(
             [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
+                # Directly resize each window to the target square
+                transforms.Resize((224, 224), antialias=True),
                 transforms.ToTensor(),
                 transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
                 transforms.Normalize(
@@ -58,8 +67,6 @@ class CnnEncoder:
         img_tensor = self.transform(image_window).unsqueeze(0).to(self.device)
         features = self.feature_extractor(img_tensor)
 
-        # --- THIS IS THE KEY CHANGE ---
-        # Pool to the configured grid size (e.g., 2x2) instead of just 1x1
         pooled_features = self.pool(features, self.pool_target)
 
         # Flatten the grid into a 1D vector and convert to numpy
@@ -102,7 +109,7 @@ def create_cnn_fingerprints_from_lazy_loader(
     lazy_loaded_data, pool_target: tuple = (2, 2)
 ) -> dict:
     """
-    NEW: Processes a large, lazy-loaded .npz file (DEM database).
+    Processes a large, lazy-loaded .npz file (DEM database).
     """
     encoder = CnnEncoder(pool_target=pool_target)
     fingerprints = {}
