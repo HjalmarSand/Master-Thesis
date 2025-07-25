@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
+.vscode/
 .venv/
 
 dino_salad.ckpt
