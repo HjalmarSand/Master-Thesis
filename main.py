@@ -17,7 +17,6 @@ import zipfile
 
 import numpy as np
 import pandas as pd
-import torch
 from PIL import Image
 from rtree import index
 from torchvision import transforms
@@ -28,7 +27,6 @@ from AI import evaluate_model, roll_angle_estimator
 from AI.finetune_placer import run_finetuning_stage
 from AI.plotting import create_cross_match_plot
 from AI.roll_angle_estimator import (
-    RollEstimatorCNN,
     visualize_model_features,
 )
 from DEM.DEM_skyline import (

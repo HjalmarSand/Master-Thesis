@@ -419,14 +419,8 @@ class FisheyeUndistorter:
             full_image_filename = os.path.basename(
                 path
             )  # e.g., "distorted_cam1_0400.jpg"
-
-            # MODIFICATION HERE: Extract the image index from the full filename
-            # This logic assumes filenames are consistently structured like "prefix_index.ext"
-            # or "prefix_camera_index.ext". We want the 'index' part.
             stem = os.path.splitext(full_image_filename)[0]  # "distorted_cam1_0400"
 
-            # Find the last numeric part after the last underscore
-            # This handles cases like "distorted_0400" or "distorted_cam1_0400"
             parts = stem.split("_")
             image_index = parts[-1]  # This should be "0400"
 
@@ -435,7 +429,7 @@ class FisheyeUndistorter:
             if using_ai_rolls:
                 ai_roll_offset = roll_lookup.get(image_index, None)
                 if ai_roll_offset is not None:  # If an AI roll exists for this index
-                    final_roll = ai_roll_offset  # Use only AI roll, override base roll
+                    final_roll = ai_roll_offset
                     if invert_rolls:
                         final_roll *= -1
                         final_roll += cam2_additional_static_roll_degrees

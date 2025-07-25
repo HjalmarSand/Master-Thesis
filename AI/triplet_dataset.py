@@ -105,7 +105,6 @@ class SkylineTripletDataset(Dataset):
         # 2. Apply transformations
         if self.transform:
             if self.mode == "train":
-                # --- Apply consistent random augmentations for the positive pair ---
                 # 1. Random Horizontal Flip
                 if torch.rand(1) < 0.5:
                     anchor_img = F.hflip(anchor_img)
@@ -122,11 +121,9 @@ class SkylineTripletDataset(Dataset):
                 anchor_img = F.affine(anchor_img, *affine_params)
                 positive_img = F.affine(positive_img, *affine_params)
 
-                # --- Apply independent augmentations to the negative image ---
                 # The full transform pipeline is applied here.
                 negative_tensor = self.transform(negative_img)
 
-                # --- Manually apply the rest of the pipeline to the positive pair ---
                 # This is more robust than slicing the transform list.
                 resize = transforms.Resize((224, 224), antialias=True)
                 to_tensor = transforms.ToTensor()
