@@ -11,6 +11,13 @@ from tqdm import tqdm
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import shutil
+import tempfile
+from xml.dom import minidom
+from xml.etree.ElementTree import Element, SubElement, tostring
+
+from PIL import Image
+
 import constants
 
 
@@ -223,6 +230,129 @@ class SemanticSegmenter:
             )
         else:
             print("Failed to get segmentation data.")
+
+    def package_for_cvat_from_masks(self, image_dir, mask_dir, output_cvat_zip_path):
+        """
+        Packages existing images and their corresponding pre-computed binary masks
+        into a single ZIP file compatible with CVAT for annotation correction.
+        Args:
+            image_dir (Path): Directory containing the original panorama images.
+            mask_dir (Path): Directory containing the pre-computed binary masks
+                             from Stage 5 (e.g., 'binary_panorama_1010.png').
+            output_cvat_zip_path (Path): The full path for the output ZIP file.
+        """
+
+        print("Searching for images and pre-computed masks...")
+        image_files = sorted(
+            list(image_dir.glob("*.jpg")) + list(image_dir.glob("*.png"))
+        )
+        mask_files = sorted(list(mask_dir.glob("*.png")))
+
+        if not image_files:
+            print(f"Error: No images found in {image_dir}.")
+            return 1
+        if not mask_files:
+            print(f"Error: No pre-computed masks found in {mask_dir}.")
+            print("Please run Stage 5 (Skyline Segmentation) first.")
+            return 1
+
+        # Create a dictionary for quick lookup of masks by their base name
+        # e.g., 'binary_panorama_1010.png' -> 'panorama_1010'
+        mask_map = {p.stem.replace("binary_", ""): p for p in mask_files}
+
+        print(f"Found {len(image_files)} images and {len(mask_files)} masks.")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            images_sub_dir = temp_path / "images"
+            masks_sub_dir = temp_path / "masks"
+            images_sub_dir.mkdir()
+            masks_sub_dir.mkdir()
+
+            # --- 1. Setup XML Structure ---
+            root = Element("annotations")
+            SubElement(root, "version").text = "1.1"
+            meta = SubElement(root, "meta")
+            task = SubElement(meta, "task")
+            SubElement(task, "name").text = output_cvat_zip_path.stem
+            labels_element = SubElement(task, "labels")
+            sky_label = SubElement(labels_element, "label")
+            SubElement(sky_label, "name").text = "sky"
+            SubElement(sky_label, "color").text = "#0000FF"  # Blue
+
+            mask_id_counter = 0
+
+            # --- 2. Process Each Image and Match with its Mask ---
+            for image_idx, image_file in enumerate(
+                tqdm(image_files, desc="Packaging for CVAT")
+            ):
+                image_stem = image_file.stem
+                if image_stem in mask_map:
+                    mask_file_path = mask_map[image_stem]
+
+                    # Copy original image
+                    shutil.copy(image_file, images_sub_dir / image_file.name)
+
+                    # Copy the pre-computed mask, renaming it sequentially
+                    mask_id_counter += 1
+                    new_mask_filename = f"{mask_id_counter}.png"
+                    shutil.copy(mask_file_path, masks_sub_dir / new_mask_filename)
+
+                    # Add image and mask info to XML
+                    with Image.open(image_file) as img:
+                        img_w, img_h = img.size
+
+                    image_element = SubElement(
+                        root,
+                        "image",
+                        id=str(image_idx),
+                        name=f"images/{image_file.name}",
+                        width=str(img_w),
+                        height=str(img_h),
+                    )
+                    SubElement(
+                        image_element,
+                        "mask",
+                        label="sky",
+                        source="auto",  # Changed to 'auto' as it's from a model
+                        occluded="0",
+                        z_order="0",
+                        subset=str(mask_id_counter),
+                    )
+                else:
+                    print(
+                        f"Warning: No matching mask found for image '{image_file.name}'. Skipping."
+                    )
+
+            # --- 3. Save XML and Create ZIP ---
+            if mask_id_counter == 0:
+                print(
+                    "Error: No image-mask pairs were successfully processed. Aborting ZIP creation."
+                )
+                return 1
+
+            xml_string = tostring(root, "utf-8")
+            pretty_xml = minidom.parseString(xml_string).toprettyxml(indent="  ")
+            with open(temp_path / "annotations.xml", "w") as f:
+                f.write(pretty_xml)
+
+            print(f"Creating ZIP archive at {output_cvat_zip_path}...")
+            shutil.make_archive(
+                str(output_cvat_zip_path.with_suffix("")),  # make_archive adds .zip
+                "zip",
+                root_dir=temp_path,
+            )
+
+        print("\n" + "=" * 50)
+        print("✅ CVAT Packaging Complete!")
+        print(f"File saved to: {output_cvat_zip_path}")
+        print("\nHow to use in CVAT:")
+        print("  1. Create a new Task in CVAT.")
+        print("  2. Add one label: 'sky'.")
+        print(f"  3. In the task menu (Actions ...), select 'Upload annotations'.")
+        print("  4. Choose 'CVAT 1.1' format and upload the ZIP file.")
+        print("=" * 50 + "\n")
+        return 0
 
 
 class InteractiveSegmentationViewer:
