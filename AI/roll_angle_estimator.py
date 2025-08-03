@@ -34,7 +34,6 @@ class RollAngleDataset(Dataset):
 
         self.data_points = []
         for image_dir in image_dirs:
-            # --- CORRECTED LOGIC: Reverted to parsing the dataset number ---
             try:
                 # Extracts the number from the parent folder name (e.g., 'dataset1' -> 1)
                 dataset_num_str = re.search(r"(\d+)", image_dir.parent.name).group(1)
@@ -184,7 +183,6 @@ def train_roll_estimator(
         model.parameters(), lr=learning_rate, weight_decay=1e-5
     )
 
-    # --- VARIABLES FOR SAVING BEST MODEL ---
     best_val_loss = float("inf")
     best_model_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
 
@@ -223,7 +221,6 @@ def train_roll_estimator(
             f"Epoch [{epoch + 1:02d}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}"
         )
 
-        # --- LOGIC TO SAVE BEST MODEL ---
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), best_model_path)

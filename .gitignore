@@ -13,6 +13,8 @@ results/
 DSM_Data/
 databases/
 
+AI/segformer_segmentation_annotations/
+
 *.jpg
 *.jpeg
 *.png
