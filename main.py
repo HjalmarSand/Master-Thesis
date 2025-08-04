@@ -936,9 +936,6 @@ def run_lidar_skyline_generation():
                         output_path = complete_skylines_dir / f"{point_id}.npz"
                         np.savez_compressed(output_path, skyline=final_skyline)
 
-        # =============================================================================
-        # PART B: GENERATE MASK BATCHES (Simplified)
-        # =============================================================================
         print_separator("PART B: Generating Mask Batches")
 
         skyline_files = sorted(list(complete_skylines_dir.glob("*.npz")))
@@ -2143,6 +2140,8 @@ def run_database_visualization():
                 / "real_closest_database_point_comparison"
                 / f"db_comparison_{image_number}.png"
             )
+
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             plt.savefig(save_path)
             plt.close()
             print(f"Comparison visualization saved to: {save_path}")
@@ -2541,7 +2540,10 @@ def main():
         2: ("Undistort Fisheye Images", run_fisheye_undistortion),
         3: ("Process GPS & Calculate Orientation", run_gps_orientation_processing),
         4: ("Stitch Panoramas from Undistorted Images", run_panorama_stitching),
-        5: ("Segment Panoramas to Create Binary Masks", run_skyline_segmentation),
+        5: (
+            "Segment Panoramas to Create Binary Masks",
+            run_skyline_segmentation,
+        ),  #! TODO: Maybe make it so that there has to be a continuous single line separating sky and rest, as that is how the DEM-skylines are set up. That will make the difference between them smaller
         # [PART 2: DEM PREPARATION & ALIGNMENT]
         10: ("PREPARE LIDAR ASSETS (One-Time Setup)", run_prepare_lidar_assets),
         11: (
@@ -2575,7 +2577,11 @@ def main():
         52: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
         53: ("Predict Roll Angles with AI Model", run_roll_angle_prediction),
         54: ("Visualize CNN Features", run_feature_visualization),
-        55: ("Fine-tune Skyline Feature Extractor", run_finetuning_stage),
+        55: (
+            "Fine-tune Skyline Feature Extractor",
+            run_finetuning_stage,
+        ),  # TODO! Maybe, when we try to finetune on images that barely have any islands in them, we are confusing the network. The loss would be high for them if they are almost only straight lines. It could prove useful to try to finetune the encoder on images with a lot of islands and then accept poor performance on images too far from land.
+        # NOTE: We have an issue with low resolution images. This is making the segmentation very difficult. Even annotating the images ourselves is very hard because of the low resolution.
     }
 
     stages_to_run_input = []

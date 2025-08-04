@@ -238,7 +238,7 @@ class SemanticSegmenter:
         Args:
             image_dir (Path): Directory containing the original panorama images.
             mask_dir (Path): Directory containing the pre-computed binary masks
-                             from Stage 5 (e.g., 'binary_panorama_1010.png').
+                            from Stage 5 (e.g., 'binary_panorama_1010.png').
             output_cvat_zip_path (Path): The full path for the output ZIP file.
         """
 

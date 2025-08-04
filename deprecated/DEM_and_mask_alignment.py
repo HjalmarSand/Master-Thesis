@@ -29,12 +29,6 @@ class MockConstants:
 
 
 constants = MockConstants()
-# --- End Configuration Section ---
-
-
-# ==============================================================================
-# SECTION 1: CORE ALIGNMENT LOGIC (from previous answer)
-# ==============================================================================
 
 
 def calculate_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
@@ -95,11 +89,6 @@ def find_best_shift(
 def apply_shift(image: np.ndarray, shift: int) -> np.ndarray:
     """Applies the calculated circular shift to an image."""
     return np.roll(image, shift, axis=1)
-
-
-# ==============================================================================
-# SECTION 2: DEM SKYLINE GENERATION LOGIC (Refactored from your code)
-# ==============================================================================
 
 
 def find_laz_files() -> List[Path]:
@@ -320,29 +309,12 @@ def generate_dem_skyline(
     return final_mask
 
 
-# ==============================================================================
-# SECTION 3: MAIN ORCHESTRATION
-# ==============================================================================
-
-
 def main():
     """
     Main function to drive the alignment process.
     Reads a CSV, and for each row, generates a DEM skyline, loads a CNN mask,
     aligns them, and saves the result.
     """
-    # --- Define Paths ---
-    # Assumes a directory structure like:
-    # ./
-    #  |- align_panoramas.py (this script)
-    #  |- viewpoints.csv
-    #  |- lidar_data/
-    #  |   |- file1.laz
-    #  |   |- file2.laz
-    #  |- cnn_masks/
-    #  |   |- panorama_mask_1.png
-    #  |   |- panorama_mask_2.png
-    #  |- output_aligned_masks/ (this will be created)
 
     input_csv_path = Path("viewpoints.csv")
     cnn_masks_dir = Path("cnn_masks")

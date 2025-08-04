@@ -17,9 +17,9 @@ import constants
 
 # TODO: Change when annotating other datasets
 # Configuration
-ORIGINAL_IMAGES_DIR = constants.IMAGES_DIR / "dataset1/panoramas"
-BINARY_MASKS_DIR = constants.IMAGES_DIR / "dataset1/binary_panorama"
-OUTPUT_DIR = constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset1"
+ORIGINAL_IMAGES_DIR = constants.IMAGES_DIR / "dataset3/panoramas"
+BINARY_MASKS_DIR = constants.IMAGES_DIR / "dataset3/binary_panorama"
+OUTPUT_DIR = constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset3"
 SKY_LABEL_NAME = "sky"
 
 # Create output directory if it doesn't exist
