@@ -18,9 +18,8 @@ sys.path.append(parent_dir)
 
 import constants
 
+
 # Phase 1: The Custom PyTorch Dataset
-
-
 class SkySegmentationDataset(Dataset):
     """
     PyTorch Dataset for binary sky segmentation.
