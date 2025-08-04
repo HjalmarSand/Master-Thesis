@@ -92,9 +92,28 @@ model = SegformerForSemanticSegmentation.from_pretrained(
 )
 
 # C. Freeze the Backbone Encoder
+# for name, param in model.named_parameters():
+#    if name.startswith("segformer."):
+#        param.requires_grad = False
+
 for name, param in model.named_parameters():
-    if name.startswith("segformer."):
+    if name.startswith("decode_head."):
+        print(name)
+
+for name, param in model.named_parameters():
+    # If the parameter's name is NOT in the classifier, freeze it
+    if "decode_head.classifier" not in name:
         param.requires_grad = False
+    # The only thing left as trainable is decode_head.classifier
+
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+percentage_trainable = (trainable_params / total_params) * 100
+
+print("\nParameter Count Verification")
+print(f"Total model parameters: {total_params:,}")
+print(f"Trainable parameters:   {trainable_params:,}")
+print(f"Percentage trainable:   {percentage_trainable:.2f}%")
 
 # Phase 3: The Training Script
 
