@@ -21,9 +21,7 @@ LIDAR_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM" / "lidar_skyline"
 
 DEM_CALC_MODE = "ORIGINAL"  # Options: "ORIGINAL", "FAST"
 
-OBSERVER_GRID_PATH = (
-    PROJECT_ROOT / "databases" / "DEM" / "observer_grid.csv"
-)  # TODO: CREATE THIS FILE IN QGI
+OBSERVER_GRID_PATH = PROJECT_ROOT / "databases" / "DEM" / "observer_grid.csv"
 
 PANORAMA_IMG_WIDTH = 5120
 PANORAMA_IMG_HEIGHT = 960

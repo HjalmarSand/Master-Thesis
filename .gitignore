@@ -14,6 +14,7 @@ DSM_Data/
 databases/
 
 AI/segformer_segmentation_annotations/
+AI/models
 
 *.jpg
 *.jpeg
