@@ -235,11 +235,14 @@ class SemanticSegmenter:
         """
         Packages existing images and their corresponding pre-computed binary masks
         into a single ZIP file compatible with CVAT for annotation correction.
+<<<<<<< HEAD
         Args:
             image_dir (Path): Directory containing the original panorama images.
             mask_dir (Path): Directory containing the pre-computed binary masks
                             from Stage 5 (e.g., 'binary_panorama_1010.png').
             output_cvat_zip_path (Path): The full path for the output ZIP file.
+=======
+>>>>>>> devHS_new
         """
 
         print("Searching for images and pre-computed masks...")

@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# The specific path is no longer needed, as the function will find all dataset files.
-# GPS_CSV_PATH = "images/dataset1/gps_interpolated_with_orientation.csv"
 OUTPUT_DIR = "trajectory_analysis_output"
 
 
@@ -382,11 +380,7 @@ if __name__ == "__main__":
     # This will now find all 'dataset*' folders inside 'images' and plot them together.
     analyze_trajectory()
 
-    # --- Run Error vs. Exclusion Radius Analysis ---
-    # This part remains unchanged and can be used as before.
-    # Example usage for multiple folders:
-    # Option 1: Using a list of directories (auto-labeled)
-    # analyze_and_plot_results(directories=["results_1", "results_2", "results_3"])
+    analyze_and_plot_results(directories=["results_1", "results_2", "results_3"])
 
     # Option 2: Using a dictionary with custom labels
     # analyze_and_plot_results(
