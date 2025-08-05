@@ -46,9 +46,8 @@ from image_retrieval.colmap_naive_image_retrieval import (
     ColmapImageRetriever,
     retrieve_top_matches,
 )
-
-from image_retrieval.megaloc_querier import MegaLocQuerier
 from image_retrieval.create_megaloc import MegaLocDatabaseCreator
+from image_retrieval.megaloc_querier import MegaLocQuerier
 from skyline_processing import (
     cnn_skyline_encoder,
     fourier_skyline_encoder,
@@ -939,9 +938,6 @@ def run_lidar_skyline_generation():
                         output_path = complete_skylines_dir / f"{point_id}.npz"
                         np.savez_compressed(output_path, skyline=final_skyline)
 
-        # =============================================================================
-        # PART B: GENERATE MASK BATCHES (Simplified)
-        # =============================================================================
         print_separator("PART B: Generating Mask Batches")
 
         skyline_files = sorted(list(complete_skylines_dir.glob("*.npz")))
@@ -2146,6 +2142,8 @@ def run_database_visualization():
                 / "real_closest_database_point_comparison"
                 / f"db_comparison_{image_number}.png"
             )
+
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             plt.savefig(save_path)
             plt.close()
             print(f"Comparison visualization saved to: {save_path}")
@@ -2517,6 +2515,7 @@ def run_feature_visualization():
         traceback.print_exc()
         return False
 
+
 def run_megaloc_database_creation():
     """
     Stage 56: Create a MegaLoc feature database from the panoramic images of a selected dataset.
@@ -2576,9 +2575,7 @@ def run_megaloc_database_creation():
 
         # Create a dedicated output directory for the database to keep things organized
         project_root = Path(__file__).parent
-        output_db_dir = (
-            project_root / "databases" / dataset_name / "megaloc_database"
-        )
+        output_db_dir = project_root / "databases" / dataset_name / "megaloc_database"
         output_db_dir.mkdir(parents=True, exist_ok=True)
         database_output_file = output_db_dir / "megaloc_pano_db.pkl"
 
@@ -2619,7 +2616,9 @@ def run_megaloc_database_creation():
         traceback.print_exc()
         return False
 
+
 # In main.py
+
 
 def run_megaloc_querying():
     """
@@ -2635,7 +2634,9 @@ def run_megaloc_querying():
         databases_root_dir = project_root / "databases"
 
         # --- 1. Select the Database to Query ---
-        available_databases = sorted(list(databases_root_dir.glob("**/megaloc_pano_db.pkl")))
+        available_databases = sorted(
+            list(databases_root_dir.glob("**/megaloc_pano_db.pkl"))
+        )
 
         if not available_databases:
             print("\nError: No MegaLoc databases found in the 'databases' directory.")
@@ -2655,10 +2656,12 @@ def run_megaloc_querying():
                 if 0 <= choice_idx < len(available_databases):
                     break
                 else:
-                    print(f"Invalid input. Please enter a number between 0 and {len(available_databases) - 1}.")
+                    print(
+                        f"Invalid input. Please enter a number between 0 and {len(available_databases) - 1}."
+                    )
             except ValueError:
                 print("Invalid input. Please enter a number.")
-        
+
         selected_db_path = available_databases[choice_idx]
         db_dataset_name = selected_db_path.parent.parent.name
         print(f"\nQuerying database for dataset: {db_dataset_name}")
@@ -2668,21 +2671,32 @@ def run_megaloc_querying():
             try:
                 # Find the 'images' directory in the path parts
                 parts = query_path.resolve().parts
-                images_index = parts.index('images')
+                images_index = parts.index("images")
                 # The next part is the dataset name (e.g., 'dataset1', 'dataset2')
                 query_dataset_name = parts[images_index + 1]
-                
+
                 # Construct the correct GPS path
-                gps_path = project_root / "images" / query_dataset_name / "gps_interpolated_with_orientation.csv"
-                print(f"Inferred query dataset: '{query_dataset_name}'. Using GPS file: {gps_path}")
-                
+                gps_path = (
+                    project_root
+                    / "images"
+                    / query_dataset_name
+                    / "gps_interpolated_with_orientation.csv"
+                )
+                print(
+                    f"Inferred query dataset: '{query_dataset_name}'. Using GPS file: {gps_path}"
+                )
+
                 if not gps_path.is_file():
                     print(f"Error: Inferred GPS file does not exist at '{gps_path}'")
                     return None
                 return gps_path
             except (ValueError, IndexError):
-                print(f"Error: Could not infer dataset name from query path: {query_path}")
-                print("The query path must be inside the 'images/[dataset_name]/' directory structure.")
+                print(
+                    f"Error: Could not infer dataset name from query path: {query_path}"
+                )
+                print(
+                    "The query path must be inside the 'images/[dataset_name]/' directory structure."
+                )
                 return None
 
         # --- 2. Select Query Mode ---
@@ -2697,36 +2711,43 @@ def run_megaloc_querying():
         query_path = None
         if mode_choice == "1":
             while True:
-                image_path_str = input("\nEnter the full path to the query image: ").strip()
+                image_path_str = input(
+                    "\nEnter the full path to the query image: "
+                ).strip()
                 if Path(image_path_str).is_file():
                     query_path = Path(image_path_str)
                     break
                 else:
                     print(f"File not found: {image_path_str}")
-        
+
         elif mode_choice == "2":
             while True:
                 # Suggest a default path based on the DB, but allow any other path
-                default_path = Path(constants.IMAGES_DIR) / db_dataset_name / "panoramas"
-                folder_path_str = input(f"\nEnter the path to the folder of query images (Enter for default: {default_path}): ").strip()
-                
-                path_to_check = Path(folder_path_str) if folder_path_str else default_path
+                default_path = (
+                    Path(constants.IMAGES_DIR) / db_dataset_name / "panoramas"
+                )
+                folder_path_str = input(
+                    f"\nEnter the path to the folder of query images (Enter for default: {default_path}): "
+                ).strip()
+
+                path_to_check = (
+                    Path(folder_path_str) if folder_path_str else default_path
+                )
 
                 if path_to_check.is_dir():
                     query_path = path_to_check
                     break
                 else:
                     print(f"Directory not found: {path_to_check}")
-        
+
         # Now that we have the query_path, infer the correct GPS file
         query_gps_path = infer_gps_path_from_query(query_path)
         if not query_gps_path:
-            return False # Stop if we couldn't find the GPS file
+            return False  # Stop if we couldn't find the GPS file
 
         # Initialize the querier with the correct DB and the correct QUERY GPS file
         querier = MegaLocQuerier(
-            database_path=str(selected_db_path),
-            gps_csv_path=str(query_gps_path)
+            database_path=str(selected_db_path), gps_csv_path=str(query_gps_path)
         )
 
         # --- 4. Execute Query and Display Results ---
@@ -2736,11 +2757,13 @@ def run_megaloc_querying():
                 print("\n--- Query Result ---")
                 print(f"  Query Image: {result['query_path']}")
                 print(f"  Best Match in DB: {result['best_match_path']}")
-                print(f"  Localization Error: {result['localization_error_meters']:.2f} meters")
+                print(
+                    f"  Localization Error: {result['localization_error_meters']:.2f} meters"
+                )
                 print(f"  Feature Cosine Distance: {result['cosine_distance']:.4f}")
             else:
                 print("\nQuery failed. Could not process the image or find GPS data.")
-        
+
         elif mode_choice == "2":
             stats = querier.query_folder(str(query_path))
             if stats:
@@ -2748,9 +2771,15 @@ def run_megaloc_querying():
                 print(f"  Total images in folder: {stats['total_queries']}")
                 print(f"  Successfully queried: {stats['successful_queries']}")
                 print("-" * 25)
-                print(f"  Average Localization Error: {stats['average_error_meters']:.2f} m")
-                print(f"  Median Localization Error:  {stats['median_error_meters']:.2f} m")
-                print(f"  Std. Dev. of Error:       {stats['std_dev_error_meters']:.2f} m")
+                print(
+                    f"  Average Localization Error: {stats['average_error_meters']:.2f} m"
+                )
+                print(
+                    f"  Median Localization Error:  {stats['median_error_meters']:.2f} m"
+                )
+                print(
+                    f"  Std. Dev. of Error:       {stats['std_dev_error_meters']:.2f} m"
+                )
                 print("-" * 25)
                 print(f"  Recall @ 1m:  {stats['recall_at_1m_percent']:.1f}%")
                 print(f"  Recall @ 5m:  {stats['recall_at_5m_percent']:.1f}%")
@@ -2761,9 +2790,10 @@ def run_megaloc_querying():
     except Exception as e:
         print(f"An error occurred during MegaLoc querying: {e}")
         import traceback
+
         traceback.print_exc()
         return False
-    
+
 
 def main():
     """Main pipeline execution"""
@@ -2791,7 +2821,10 @@ def main():
         2: ("Undistort Fisheye Images", run_fisheye_undistortion),
         3: ("Process GPS & Calculate Orientation", run_gps_orientation_processing),
         4: ("Stitch Panoramas from Undistorted Images", run_panorama_stitching),
-        5: ("Segment Panoramas to Create Binary Masks", run_skyline_segmentation),
+        5: (
+            "Segment Panoramas to Create Binary Masks",
+            run_skyline_segmentation,
+        ),  #! TODO: Maybe make it so that there has to be a continuous single line separating sky and rest, as that is how the DEM-skylines are set up. That will make the difference between them smaller
         # [PART 2: DEM PREPARATION & ALIGNMENT]
         10: ("PREPARE LIDAR ASSETS (One-Time Setup)", run_prepare_lidar_assets),
         11: (
@@ -2825,9 +2858,13 @@ def main():
         52: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
         53: ("Predict Roll Angles with AI Model", run_roll_angle_prediction),
         54: ("Visualize CNN Features", run_feature_visualization),
-        55: ("Fine-tune Skyline Feature Extractor", run_finetuning_stage),
+        55: (
+            "Fine-tune Skyline Feature Extractor",
+            run_finetuning_stage,
+        ),  # TODO! Maybe, when we try to finetune on images that barely have any islands in them, we are confusing the network. The loss would be high for them if they are almost only straight lines. It could prove useful to try to finetune the encoder on images with a lot of islands and then accept poor performance on images too far from land.
+        # NOTE: We have an issue with low resolution images. This is making the segmentation very difficult. Even annotating the images ourselves is very hard because of the low resolution.
         56: ("Create MegaLoc Database", run_megaloc_database_creation),
-        57: ("Query the MegaLoc Database", run_megaloc_querying)
+        57: ("Query the MegaLoc Database", run_megaloc_querying),
     }
 
     stages_to_run_input = []

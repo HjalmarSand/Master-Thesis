@@ -14,7 +14,7 @@ from AI.triplet_dataset import SkylineTripletDataset
 
 
 class EmbeddingNet(nn.Module):
-    def __init__(self, embedding_dim=128, freeze_layers=14):
+    def __init__(self, embedding_dim=128, freeze_layers=19):
         super(EmbeddingNet, self).__init__()
         self.backbone = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
 
