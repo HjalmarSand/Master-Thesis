@@ -41,8 +41,7 @@ def _get_canonical_polygons(annotations_list):
         # 3. Add the canonical form (as a tuple to make it hashable/sortable)
         canonical_forms.append(tuple(points))
 
-    # 4. Sort the list of all canonical polygons to make it independent
-    #    of annotation creation order.
+    # 4. Sort the list of all canonical polygons to make it independent of annotation creation order.
     canonical_forms.sort()
 
     return canonical_forms
@@ -62,7 +61,7 @@ def filter_manual_annotations(
     with open(exported_annotation_path, "r") as f:
         exported_data = json.load(f)
 
-    # --- Step 1: Map pre-annotations for easy lookup ---
+    # Step 1: Map pre-annotations for easy lookup
     pre_annot_map = {}
     pre_images_map = {img["id"]: img for img in pre_data["images"]}
 
@@ -78,7 +77,7 @@ def filter_manual_annotations(
         # Store the canonical form using the filename as the key
         pre_annot_map[file_name] = _get_canonical_polygons(annots_for_image)
 
-    # --- Step 2: Identify manually changed images ---
+    # Step 2: Identify manually changed images
     manually_annotated_image_ids = set()
 
     for image in exported_data["images"]:
@@ -105,7 +104,7 @@ def filter_manual_annotations(
             print(f"Found modified annotations for image: {file_name}")
             manually_annotated_image_ids.add(image_id)
 
-    # --- Step 3: Build the new COCO JSON file ---
+    # Step 3: Build the new COCO JSON file
     final_coco = {
         "info": exported_data.get("info", {}),
         "licenses": exported_data.get("licenses", []),
@@ -123,7 +122,6 @@ def filter_manual_annotations(
         if ann["image_id"] in manually_annotated_image_ids:
             final_coco["annotations"].append(ann)
 
-    # --- Step 4: Save the final output ---
     print(f"\nFound {len(final_coco['images'])} manually annotated or modified images.")
     print(f"Saving the filtered annotations to {output_path}")
 

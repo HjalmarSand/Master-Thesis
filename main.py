@@ -2229,12 +2229,13 @@ def run_fisheye_segmentation():
 
 def run_roll_angle_training():
     """
-    Stage 51: Train a single, unified CNN model on a pre-defined list of datasets.
+    Stage 51: Train a single, unified CNN model on a combined dataset from
+    both front and back cameras for better generalization.
     """
     print_stage_header(
         51,
         "UNIFIED ROLL ANGLE ESTIMATOR TRAINING",
-        "Training one model on a combined dataset for better generalization.",
+        "Training one model on a combined dataset (front and back cameras).",
     )
     try:
         project_root = Path(__file__).parent
@@ -2245,23 +2246,33 @@ def run_roll_angle_training():
             print(f"ERROR: Annotation file not found at '{annotation_csv_path}'")
             return False
 
-        # Add the paths to all the image folders you want to train on.
-        training_folders = [
-            images_root / "dataset1" / "distorted_images_cam1",
-            images_root / "dataset2" / "distorted_images_cam1",
-            images_root / "dataset3" / "distorted_images_cam1",
-        ]
+        training_sources = {
+            # Back Camera sources map to the 'roll_back' column
+            images_root / "dataset1" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset2" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset3" / "distorted_images_cam1": "roll_back",
+            # Front Camera sources map to the 'roll_front' column
+            images_root / "dataset3" / "distorted_images_cam2": "roll_front",
+            # images_root / "dataset4" / "distorted_images_cam2": "roll_front",
+        }
 
-        # Filter out any folders that don't actually exist
-        valid_training_folders = [p for p in training_folders if p.is_dir()]
-        if not valid_training_folders:
+        # Filter out any sources where the directory doesn't actually exist
+        valid_training_sources = {
+            path: col for path, col in training_sources.items() if path.is_dir()
+        }
+
+        if not valid_training_sources:
             print("None of the specified training folders exist. Aborting.")
             return False
 
-        model_save_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+        print("The following valid data sources will be used for training:")
+        for path, col in valid_training_sources.items():
+            print(f"- {path}  ->  '{col}'")
+
+        model_save_path = project_root / "AI" / "models" / "roll_estimator_unified.pth"
 
         exit_code = roll_angle_estimator.train_roll_estimator(
-            image_dirs=valid_training_folders,  # Pass the list of folders
+            training_sources=valid_training_sources,
             annotation_csv=annotation_csv_path,
             model_save_path=model_save_path,
             num_epochs=120,
@@ -2279,60 +2290,45 @@ def run_roll_angle_training():
 
 def run_roll_model_evaluation():
     """
-    Stage 52: Evaluate the combined roll angle model on the validation set
-    from the full training data.
+    Stage 52: Perform a detailed analysis of the best model on the validation set.
     """
-    print_stage_header(52, "ROLL ANGLE MODEL EVALUATION")
+    print_stage_header(
+        52,
+        "ROLL ANGLE MODEL ANALYSIS",
+        "Generating detailed metrics and plots for the best model.",
+    )
     try:
         project_root = Path(__file__).parent
         annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
         images_root = Path(constants.IMAGES_DIR)
 
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_unified_best.pth"
         if not model_path.is_file():
-            print(
-                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 51 first."
-            )
+            print(f"ERROR: Best model not found at '{model_path}'.")
             return False
 
-        # Use the SAME list of folders that the model was trained on
-        training_folders = [
-            images_root / "dataset1" / "distorted_images_cam1",
-            images_root / "dataset2" / "distorted_images_cam1",
-            images_root / "dataset3" / "distorted_images_cam1",
-        ]
+        # Use the EXACT SAME sources as in training
+        training_sources = {
+            images_root / "dataset1" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset2" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset3" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset3" / "distorted_images_cam2": "roll_front",
+        }
+        valid_training_sources = {
+            path: col for path, col in training_sources.items() if path.is_dir()
+        }
 
-        valid_folders = [p for p in training_folders if p.is_dir()]
-        if not valid_folders:
-            print("None of the specified evaluation folders exist.")
-            return False
+        results_dir = project_root / "AI" / "evaluation_results"
 
-        # This must be identical to the transform used during training
-        transform = transforms.Compose(
-            [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
-            ]
-        )
-        # END OF BLOCK
-
-        plot_save_path = (
-            project_root / "AI" / "evaluation_results" / "evaluation_combined_model.png"
-        )
-
-        exit_code = evaluate_model.run_evaluation(
-            image_dirs=valid_folders,
+        exit_code = roll_angle_estimator.analyze_model_performance(
+            training_sources=valid_training_sources,
             annotation_csv=annotation_csv_path,
             model_path=model_path,
-            plot_save_path=plot_save_path,
-            transform=transform,  # <<< PASS THE TRANSFORM HERE
+            results_dir=results_dir,
         )
         return exit_code == 0
-
     except Exception as e:
-        print(f"An error occurred during model evaluation: {e}")
+        print(f"An error occurred during roll model evaluation: {e}")
         import traceback
 
         traceback.print_exc()
@@ -2491,7 +2487,7 @@ def run_feature_visualization():
         # Define the relative path to the image you want to visualize.
         sample_image_path = (
             project_root
-            / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
+            / "images/dataset2/distorted_images_cam2/distorted_cam2_0447.jpg"
         )
         # END OF CONFIGURATION
 
@@ -2853,7 +2849,10 @@ def main():
         31: ("CNN Cross-Matching (Real vs. DEM Grid)", run_cnn_cross_matching_analysis),
         32: ("Visualize Closest DEM Grid Point", run_database_visualization),
         # [PART 5: Optional AI Model Training/Evaluation]
-        50: ("Segment Fisheye Images for Roll CNN", run_fisheye_segmentation),
+        50: (
+            "Segment Fisheye Images for Roll CNN",
+            run_fisheye_segmentation,
+        ),  # Now we no longer try to roll correct on segmented images
         51: ("Train Roll Angle Estimator", run_roll_angle_training),
         52: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
         53: ("Predict Roll Angles with AI Model", run_roll_angle_prediction),

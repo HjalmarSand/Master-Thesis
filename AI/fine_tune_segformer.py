@@ -28,9 +28,7 @@ class SkySegmentationDataset(Dataset):
     - Uses a processor to prepare data for the SegFormer model.
     """
 
-    def __init__(
-        self, root_dir, annotation_file, processor, sky_category_id
-    ):  # <-- Added argument
+    def __init__(self, root_dir, annotation_file, processor, sky_category_id):
         self.root_dir = root_dir
         self.processor = processor
         self.coco = COCO(annotation_file)
