@@ -131,13 +131,72 @@ def filter_manual_annotations(
         json.dump(final_coco, f, indent=4)
 
 
+
+def filter_unannotated_images(exported_annotation_path, output_path):
+    """
+    Filters a COCO JSON file to remove all images that have no annotations.
+
+    Args:
+        input_annotation_path (str): Path to the COCO annotation file to be filtered.
+        output_path (str): Path to save the new, filtered COCO JSON file.
+    """
+    print(f"Loading annotations from {input_annotation_path}...")
+    with open(input_annotation_path, "r") as f:
+        data = json.load(f)
+
+    # --- Step 1: Find all image IDs that have annotations ---
+    annotated_image_ids = set()
+    for ann in data["annotations"]:
+        annotated_image_ids.add(ann["image_id"])
+
+    print(f"Found {len(annotated_image_ids)} images with annotations.")
+
+    # --- Step 2: Build the new COCO JSON file with filtered data ---
+    final_coco = {
+        "info": data.get("info", {}),
+        "licenses": data.get("licenses", []),
+        "categories": data["categories"],
+        "images": [],
+        "annotations": [],
+    }
+
+    # Add only the images that have a corresponding annotation
+    for image in data["images"]:
+        if image["id"] in annotated_image_ids:
+            final_coco["images"].append(image)
+
+    # All existing annotations should belong to an annotated image,
+    # but we filter them as well for correctness.
+    for ann in data["annotations"]:
+        if ann["image_id"] in annotated_image_ids:
+            final_coco["annotations"].append(ann)
+
+    # --- Step 3: Save the final output ---
+    print(
+        f"Saving filtered annotations for {len(final_coco['images'])} images to {output_path}"
+    )
+    with open(output_path, "w") as f:
+        json.dump(final_coco, f, indent=4)
+
+
+
 # NOTE: Change paths here if for different datasets
 if __name__ == "__main__":
-    filter_manual_annotations(
-        pre_annotation_path=constants.PROJECT_ROOT
-        / "AI/segformer_segmentation_annotations/dataset2/annotations.json",
-        exported_annotation_path=constants.PROJECT_ROOT
-        / "AI/segformer_segmentation_annotations/dataset2/annotations/instances_default.json",
-        output_path=constants.PROJECT_ROOT
-        / "AI/segformer_segmentation_annotations/dataset2/manual_annotations.json",
-    )
+    process_pre_annotations = False  # Set to False if you only want to filter unannotated images
+    
+    input_annotation_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset3/annotations/instances_default.json"
+    output_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset3/manual_annotations.json"
+
+    if process_pre_annotations:
+        filter_manual_annotations(
+            pre_annotation_path=constants.PROJECT_ROOT
+            / "AI/segformer_segmentation_annotations/dataset3/annotations.json",
+            exported_annotation_path=input_annotation_path,
+            output_path=output_path
+        )
+
+    else:
+        filter_unannotated_images(
+            exported_annotation_path=input_annotation_path,
+            output_path=output_path,
+        )
