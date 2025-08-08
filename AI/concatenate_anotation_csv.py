@@ -40,6 +40,8 @@ def process_annotation_file(filepath, dataset_num, index_offset):
         # Invert the sign of the back camera roll as per unit circle convention to left tilts
         df["roll_back"] = df["roll_back"] * -1
 
+        df.dropna(subset=["roll_back", "roll_front"], how="all", inplace=True)
+
         print(f"Processed (high priority): {os.path.basename(filepath)}")
         return df[["dataset", "index", "roll_back", "roll_front"]]
 
@@ -105,9 +107,14 @@ def create_master_annotations():
             os.path.join(script_dir, "roll_annotations3.csv"), 3, 500
         )
     )
+    priority_dfs.append(
+        process_annotation_file(
+            os.path.join(script_dir, "roll_annotations4.csv"), 4, 450
+        )
+    )
 
-    secondary_dfs.append(process_roll_file(os.path.join(script_dir, "roll2.csv"), 2))
-    secondary_dfs.append(process_roll_file(os.path.join(script_dir, "roll3.csv"), 3))
+    # secondary_dfs.append(process_roll_file(os.path.join(script_dir, "roll2.csv"), 2))
+    # secondary_dfs.append(process_roll_file(os.path.join(script_dir, "roll3.csv"), 3))
 
     # Filter out None values from both lists
     priority_dfs = [df for df in priority_dfs if df is not None]

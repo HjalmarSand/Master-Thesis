@@ -384,8 +384,6 @@ class FisheyeUndistorter:
         base_roll_degrees=0,
         horizon_bend_correction=0.0,
         predicted_rolls_csv: Path = None,
-        invert_rolls: bool = False,
-        cam2_additional_static_roll_degrees: float = 0.0,
     ):
         Path(output_dir_left).mkdir(parents=True, exist_ok=True)
         Path(output_dir_right).mkdir(parents=True, exist_ok=True)
@@ -402,12 +400,13 @@ class FisheyeUndistorter:
         if predicted_rolls_csv and predicted_rolls_csv.exists():
             print(f"Loading AI-predicted roll angles from {predicted_rolls_csv.name}")
             try:
-                rolls_df = pd.read_csv(predicted_rolls_csv)
-                # MODIFICATION HERE: Create roll_lookup with image index as key
+                rolls_df = pd.read_csv(predicted_rolls_csv, dtype={"filename": str})
                 roll_lookup = {
-                    f"{int(row.filename):04d}": row.predicted_roll
+                    row.filename: row.predicted_roll
                     for row in rolls_df.itertuples(index=False)
                 }
+
+                # print(f"Roll-lookup: {roll_lookup}") # Was used for debugging
                 using_ai_rolls = True
             except Exception as e:
                 print(
@@ -429,10 +428,7 @@ class FisheyeUndistorter:
             if using_ai_rolls:
                 ai_roll_offset = roll_lookup.get(image_index, None)
                 if ai_roll_offset is not None:  # If an AI roll exists for this index
-                    final_roll = ai_roll_offset
-                    if invert_rolls:
-                        final_roll *= -1
-                        final_roll += cam2_additional_static_roll_degrees
+                    final_roll = -ai_roll_offset
                 else:
                     print(
                         f"Warning: No AI roll prediction found for image index '{image_index}' (from {full_image_filename}). Using base roll."

@@ -182,13 +182,19 @@ def run_fisheye_undistortion():
         print(f"\nProcessing dataset: {selected_dir.name}")
 
         predicted_rolls_cam1_csv = selected_dir / "predicted_roll_angles_cam1.csv"
+        predicted_rolls_cam2_csv = selected_dir / "predicted_roll_angles_cam2.csv"
+
         if not predicted_rolls_cam1_csv.exists():
             print(
-                f"Warning: Predicted rolls CSV not found at '{predicted_rolls_cam1_csv}'."
+                f"Warning: CAM1 predicted rolls CSV not found at '{predicted_rolls_cam1_csv}'."
             )
-            print("         Proceeding without AI roll correction.")
-            # Set to None so the undistorter knows not to use it
             predicted_rolls_cam1_csv = None
+
+        if not predicted_rolls_cam2_csv.exists():
+            print(
+                f"Warning: CAM2 predicted rolls CSV not found at '{predicted_rolls_cam2_csv}'."
+            )
+            predicted_rolls_cam2_csv = None
 
         # Initialize the undistorter
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
@@ -228,7 +234,6 @@ def run_fisheye_undistortion():
             base_roll_degrees=params["roll_cam1"],
             horizon_bend_correction=params["horizon_bend_cam1"],
             predicted_rolls_csv=predicted_rolls_cam1_csv,  # Pass the CSV
-            invert_rolls=False,  # Do NOT invert for cam1
         )
 
         # Process Cam2
@@ -244,9 +249,7 @@ def run_fisheye_undistortion():
             vertical_angle_offset_degrees=pitch_adjustment_angle,
             base_roll_degrees=params["roll_cam2"],
             horizon_bend_correction=params["horizon_bend_cam2"],
-            predicted_rolls_csv=predicted_rolls_cam1_csv,  # Pass the SAME CSV
-            invert_rolls=True,  # Invert the angles for cam2
-            cam2_additional_static_roll_degrees=-0.5,
+            predicted_rolls_csv=predicted_rolls_cam2_csv,
         )
 
         print(
@@ -2227,6 +2230,7 @@ def run_fisheye_segmentation():
         return False
 
 
+# TODO: Maybe make a harder focus mask in the center, since this is where most of the usable data comes from. Also do some more data augmentation, like cropping the image to only a rectangle in the middle to begin with, since that is where the roll usually is? We might also later when we use the predicted rolls for back and front camera make some kind of analysis of common differences between them, and if the differences are too large we can view that data point as likely flawed. Maybe throw it away of average the roll between them, or select one that is more likely according to the distributions of rolls seen in the dataset
 def run_roll_angle_training():
     """
     Stage 51: Train a single, unified CNN model on a combined dataset from
@@ -2251,9 +2255,12 @@ def run_roll_angle_training():
             images_root / "dataset1" / "distorted_images_cam1": "roll_back",
             images_root / "dataset2" / "distorted_images_cam1": "roll_back",
             images_root / "dataset3" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset4" / "distorted_images_cam1": "roll_back",
             # Front Camera sources map to the 'roll_front' column
+            images_root / "dataset1" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset2" / "distorted_images_cam2": "roll_front",
             images_root / "dataset3" / "distorted_images_cam2": "roll_front",
-            # images_root / "dataset4" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset4" / "distorted_images_cam2": "roll_front",
         }
 
         # Filter out any sources where the directory doesn't actually exist
@@ -2275,7 +2282,7 @@ def run_roll_angle_training():
             training_sources=valid_training_sources,
             annotation_csv=annotation_csv_path,
             model_save_path=model_save_path,
-            num_epochs=120,
+            num_epochs=200,
         )
 
         return exit_code == 0
@@ -2309,10 +2316,16 @@ def run_roll_model_evaluation():
 
         # Use the EXACT SAME sources as in training
         training_sources = {
+            # Back Camera sources map to the 'roll_back' column
             images_root / "dataset1" / "distorted_images_cam1": "roll_back",
             images_root / "dataset2" / "distorted_images_cam1": "roll_back",
             images_root / "dataset3" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset4" / "distorted_images_cam1": "roll_back",
+            # Front Camera sources map to the 'roll_front' column
+            images_root / "dataset1" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset2" / "distorted_images_cam2": "roll_front",
             images_root / "dataset3" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset4" / "distorted_images_cam2": "roll_front",
         }
         valid_training_sources = {
             path: col for path, col in training_sources.items() if path.is_dir()
@@ -2337,16 +2350,17 @@ def run_roll_model_evaluation():
 
 def run_roll_angle_prediction():
     """
-    Stage 53: Use the trained model to predict roll angles for cam1 images.
+    Stage 53: Use the unified model to predict roll angles for all available
+    camera images (cam1 and cam2).
     """
     print_stage_header(
         53,
-        "PREDICT ROLL ANGLES FOR CAM1",
-        "Applying trained model to cam1 distorted fisheye images.",
+        "PREDICT ROLL ANGLES (UNIFIED MODEL)",
+        "Applying trained model to all available distorted fisheye images.",
     )
     try:
         project_root = Path(__file__).parent
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_unified_best.pth"
         if not model_path.exists():
             print(
                 f"ERROR: Best model not found at '{model_path}'. Please run Stage 51 first."
@@ -2354,34 +2368,50 @@ def run_roll_angle_prediction():
             return False
 
         datasets_root_dir = Path(constants.IMAGES_DIR)
-        dataset_dirs = sorted(
-            [
-                d
-                for d in datasets_root_dir.iterdir()
-                if d.is_dir() and (d / "distorted_images_cam1").is_dir()
-            ]
-        )
+
+        dataset_dirs = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir()])
 
         if not dataset_dirs:
-            print("No dataset folders with distorted images found.")
+            print("No dataset folders found.")
             return False
+
+        # Define the camera types to look for
+        camera_subfolders = {
+            "cam1": "distorted_images_cam1",
+            "cam2": "distorted_images_cam2",
+        }
 
         all_successful = True
         for dataset_dir in dataset_dirs:
             print(f"\nProcessing dataset: {dataset_dir.name}")
+            found_any_cam_in_dataset = False
 
-            # Predict for cam1 only
-            input_dir_cam1 = dataset_dir / "distorted_images_cam1"
-            output_csv_cam1 = dataset_dir / "predicted_roll_angles_cam1.csv"
-            if (
-                roll_angle_estimator.predict_angles_for_directory(
-                    input_dir_cam1, model_path, output_csv_cam1
+            # Loop through each potential camera type
+            for cam_name, cam_folder_name in camera_subfolders.items():
+                input_dir = dataset_dir / cam_folder_name
+
+                # Check if this specific camera folder exists
+                if input_dir.is_dir() and any(input_dir.iterdir()):
+                    found_any_cam_in_dataset = True
+                    print(f"  - Found '{cam_folder_name}'. Predicting angles...")
+
+                    output_csv = dataset_dir / f"predicted_roll_angles_{cam_name}.csv"
+
+                    if (
+                        roll_angle_estimator.predict_angles_for_directory(
+                            input_dir, model_path, output_csv
+                        )
+                        != 0
+                    ):
+                        all_successful = False
+
+            if not found_any_cam_in_dataset:
+                print(
+                    f"  - No camera subfolders with images found in {dataset_dir.name}. Skipping."
                 )
-                != 0
-            ):
-                all_successful = False
 
         return all_successful
+
     except Exception as e:
         print(f"An error occurred during roll angle prediction: {e}")
         import traceback
@@ -2476,20 +2506,18 @@ def run_feature_visualization():
         project_root = Path(__file__).parent
 
         # Path to the single combined model
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_unified_best.pth"
         if not model_path.is_file():
             print(
-                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+                f"ERROR: Unified model not found at '{model_path}'. Please run Stage 3 first."
             )
             return False
 
-        # CONFIGURE THE VISUALIZATION IMAGE HERE
         # Define the relative path to the image you want to visualize.
         sample_image_path = (
             project_root
-            / "images/dataset2/distorted_images_cam2/distorted_cam2_0447.jpg"
+            / "images/dataset3/distorted_images_cam2/distorted_cam2_1000.jpg"
         )
-        # END OF CONFIGURATION
 
         if not sample_image_path.is_file():
             print(f"ERROR: Sample image not found at '{sample_image_path}'.")
@@ -2522,7 +2550,6 @@ def run_megaloc_database_creation():
         "Generating MegaLoc visual feature vectors for panoramic images.",
     )
     try:
-        # --- Interactive Dataset Selection (consistent with other stages) ---
         datasets_root_dir = Path(constants.IMAGES_DIR)
         # Find datasets that have both panoramas and the required GPS file
         dataset_dirs = sorted(
@@ -2848,7 +2875,6 @@ def main():
         ),
         31: ("CNN Cross-Matching (Real vs. DEM Grid)", run_cnn_cross_matching_analysis),
         32: ("Visualize Closest DEM Grid Point", run_database_visualization),
-        # [PART 5: Optional AI Model Training/Evaluation]
         50: (
             "Segment Fisheye Images for Roll CNN",
             run_fisheye_segmentation,

@@ -11,6 +11,8 @@ sys.path.append(parent_dir)
 
 import constants
 
+# TODO: We might want to
+
 
 def _get_canonical_polygons(annotations_list):
     """

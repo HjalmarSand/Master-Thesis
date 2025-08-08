@@ -18,6 +18,8 @@ sys.path.append(parent_dir)
 
 import constants
 
+# TODO: We need to make sure that the datasets we are using are the same ones that we uploaded and annotated to CVAT! I sometimes make changes to the panoramas, like trying a new roll correction model and so on, so the datasets uploaded to CVAT are not the same as the ones i have locally. We need to download them for the purpose of model training
+
 
 # Phase 1: The Custom PyTorch Dataset
 class SkySegmentationDataset(Dataset):
