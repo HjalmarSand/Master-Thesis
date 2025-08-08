@@ -24,41 +24,63 @@ import constants
 # Phase 1: The Custom PyTorch Dataset
 class SkySegmentationDataset(Dataset):
     """
-    PyTorch Dataset for binary sky segmentation.
-    - Loads images from a directory.
-    - Parses COCO annotations to create binary masks (0=background, 1=sky).
+    PyTorch Dataset for binary sky segmentation from multiple COCO datasets.
+    - Scans multiple dataset directories.
+    - For each dataset, it loads images and parses its COCO annotations.
+    - Creates a master list of all samples.
     - Uses a processor to prepare data for the SegFormer model.
     """
 
-    def __init__(self, root_dir, annotation_file, processor, sky_category_id):
-        self.root_dir = root_dir
+    def __init__(self, dataset_configs, processor, sky_category_id):
         self.processor = processor
-        self.coco = COCO(annotation_file)
-        self.image_ids = self.coco.getImgIds()
         self.sky_category_id = sky_category_id
+        self.samples = []
+
+        for config in tqdm(dataset_configs, desc="Processing datasets"):
+            image_dir = config["image_dir"]
+            annotation_file = config["annotation_file"]
+
+            coco = COCO(annotation_file)
+            image_ids = coco.getImgIds()
+
+            # Create a sample for each image in the current dataset
+            for image_id in image_ids:
+                image_info = coco.loadImgs(image_id)[0]
+                image_path = os.path.join(image_dir, image_info["file_name"])
+
+                # Store all necessary info for this one sample
+                self.samples.append(
+                    {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "image_info": image_info,
+                        "coco_instance": coco,  # Reference to its specific COCO object
+                    }
+                )
 
     def __len__(self):
-        return len(self.image_ids)
+        return len(self.samples)
 
     def __getitem__(self, idx):
         # 1. Get image info and load the image
-        image_id = self.image_ids[idx]
-        image_info = self.coco.loadImgs(image_id)[0]
-        image_path = os.path.join(self.root_dir, image_info["file_name"])
+        sample = self.samples[idx]
+        image_id = sample["image_id"]
+        image_info = sample["image_info"]
+        image_path = sample["image_path"]
+        coco = sample["coco_instance"]
         image = Image.open(image_path).convert("RGB")
 
-        # 2. Create a binary segmentation mask (0s and 1s)
+        # 3. Create the binary mask using the correct COCO instance
         mask = torch.zeros(
             (image_info["height"], image_info["width"]), dtype=torch.uint8
         )
-        ann_ids = self.coco.getAnnIds(imgIds=image_id, catIds=[self.sky_category_id])
-        anns = self.coco.loadAnns(ann_ids)
+        ann_ids = coco.getAnnIds(imgIds=image_id, catIds=[self.sky_category_id])
+        anns = coco.loadAnns(ann_ids)
 
         for ann in anns:
-            # Draw the polygon for the "sky" annotation onto the mask with a value of 1
-            mask[self.coco.annToMask(ann) == 1] = 1
+            mask[coco.annToMask(ann) == 1] = 1
 
-        # 3. Use the processor to prepare the image and mask
+        # 4. Use the processor to prepare the image and mask
         inputs = self.processor(
             images=image, segmentation_maps=mask, return_tensors="pt"
         )
@@ -114,16 +136,26 @@ print(f"Total model parameters: {total_params:,}")
 print(f"Trainable parameters:   {trainable_params:,}")
 print(f"Percentage trainable:   {percentage_trainable:.2f}%")
 
-# Phase 3: The Training Script
-
 # 1. Main Configuration
-# NOTE: Update these paths depending on the dataset!
-IMAGE_DIR = constants.IMAGES_DIR / "dataset2/panoramas"
-ANNOTATION_FILE = (
-    constants.PROJECT_ROOT
-    / "AI/segformer_segmentation_annotations/dataset2/manual_annotations.json"
+# Define the datasets you want to include in the training
+DATASET_NAMES = ["dataset1", "dataset2", "dataset3"]
+
+# Construct the list of configurations for the Dataset class
+dataset_configs = []
+for name in DATASET_NAMES:
+    dataset_configs.append(
+        {
+            "image_dir": constants.IMAGES_DIR / name / "panoramas",
+            "annotation_file": constants.PROJECT_ROOT
+            / "AI/segformer_segmentation_annotations"
+            / name
+            / "manual_annotations.json",
+        }
+    )
+
+OUTPUT_DIR = (
+    constants.PROJECT_ROOT / "AI/models/segformer-b5-sky-finetuned-multi-dataset"
 )
-OUTPUT_DIR = constants.PROJECT_ROOT / "AI/models/segformer-b5-sky-finetuned"
 SKY_CATEGORY_ID = 1
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,13 +164,12 @@ BATCH_SIZE = 4
 LEARNING_RATE = 5e-5
 
 # 2. Create Datasets and Dataloaders
+# Use the new SkySegmentationDataset class
 full_dataset = SkySegmentationDataset(
-    root_dir=IMAGE_DIR,
-    annotation_file=ANNOTATION_FILE,
+    dataset_configs=dataset_configs,
     processor=processor,
     sky_category_id=SKY_CATEGORY_ID,
 )
-
 # Simple 80/20 split for training and validation
 train_size = int(0.8 * len(full_dataset))
 val_size = len(full_dataset) - train_size
