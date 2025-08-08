@@ -1,17 +1,14 @@
 import json
-import os
 import sys
+from pathlib import Path
 
-# Get the absolute path of the directory containing the current script
-current_script_dir = os.path.dirname(os.path.abspath(__file__))
+current_script_dir = Path(__file__).resolve().parent
 # Get the parent directory (one level up)
-parent_dir = os.path.dirname(current_script_dir)
+parent_dir = current_script_dir.parent
 # Add the parent directory to Python's system path
-sys.path.append(parent_dir)
+sys.path.append(str(parent_dir))
 
 import constants
-
-# TODO: We might want to
 
 
 def _get_canonical_polygons(annotations_list):
@@ -29,6 +26,8 @@ def _get_canonical_polygons(annotations_list):
     canonical_forms = []
     for ann in annotations_list:
         # COCO segmentation is a list of polygons. We handle the first one.
+        if not ann["segmentation"]:
+            continue
         flat_coords = ann["segmentation"][0]
 
         # 1. Group coordinates into (x, y) points and convert to int
@@ -131,17 +130,16 @@ def filter_manual_annotations(
         json.dump(final_coco, f, indent=4)
 
 
-
 def filter_unannotated_images(exported_annotation_path, output_path):
     """
     Filters a COCO JSON file to remove all images that have no annotations.
 
     Args:
-        input_annotation_path (str): Path to the COCO annotation file to be filtered.
+        exported_annotation_path (str): Path to the COCO annotation file to be filtered.
         output_path (str): Path to save the new, filtered COCO JSON file.
     """
-    print(f"Loading annotations from {input_annotation_path}...")
-    with open(input_annotation_path, "r") as f:
+    print(f"Loading annotations from {exported_annotation_path}...")
+    with open(exported_annotation_path, "r") as f:
         data = json.load(f)
 
     # Find all image IDs that have annotations
@@ -177,31 +175,109 @@ def filter_unannotated_images(exported_annotation_path, output_path):
         json.dump(final_coco, f, indent=4)
 
 
+def _select_from_list(items, prompt_message):
+    """Helper function to prompt user to select an item from a list."""
+    if not items:
+        return None
 
-# NOTE: Change paths here if for different datasets
-if __name__ == "__main__":
+    print(f"\n{prompt_message}")
+    for i, item in enumerate(items, 1):
+        print(f"  {i}. {item}")
 
-    input_annotation_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset1/annotations/instances_default.json"
-    output_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset1/manual_annotations.json"
+    while True:
+        try:
+            choice = int(input("Enter the number of your choice: "))
+            if 1 <= choice <= len(items):
+                return items[choice - 1]
+            else:
+                print("Invalid number. Please try again.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
 
-    print("")
-    process_pre_annotations = input("Enter 1 for filtering of pre-annotated data before removing non-annotated data and 2 if only manually annotated data should be filtered: ")  
 
-    if process_pre_annotations == "1":
-        process_pre_annotations = True
-    elif process_pre_annotations == "2":
-        process_pre_annotations = False
+def main():
+    """Main function to drive the interactive annotation filtering process."""
+    base_datasets_dir = constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations"
 
-    if process_pre_annotations:
-        filter_manual_annotations(
-            pre_annotation_path=constants.PROJECT_ROOT
-            / "AI/segformer_segmentation_annotations/dataset3/annotations.json",
-            exported_annotation_path=input_annotation_path,
-            output_path=output_path
+    if not base_datasets_dir.is_dir():
+        print(f"Error: Base directory not found at {base_datasets_dir}")
+        sys.exit(1)
+
+    # 1. Find and select the dataset directory
+    dataset_dirs = sorted([d.name for d in base_datasets_dir.iterdir() if d.is_dir()])
+    if not dataset_dirs:
+        print(f"Error: No dataset directories found in {base_datasets_dir}")
+        sys.exit(1)
+
+    selected_dir_name = _select_from_list(
+        dataset_dirs, "Please select a dataset folder to process:"
+    )
+    if not selected_dir_name:
+        sys.exit(1)  # Should not happen if there are dirs, but good practice
+
+    selected_dataset_path = base_datasets_dir / selected_dir_name
+
+    # 2. Find and select the annotation file to process
+    # Exclude the default pre-annotation file and any previously generated manual files
+    potential_files = sorted(
+        [
+            f.name
+            for f in selected_dataset_path.glob("*.json")
+            if f.name != "annotations.json" and not f.name.startswith("manual_")
+        ]
+    )
+
+    if not potential_files:
+        print(
+            f"Error: No suitable exported annotation .json files found in {selected_dataset_path}"
         )
+        print(
+            "Looking for files that are not named 'annotations.json' or start with 'manual_'."
+        )
+        sys.exit(1)
 
-    else:
-        filter_unannotated_images(
-            exported_annotation_path=input_annotation_path,
+    selected_file_name = _select_from_list(
+        potential_files, "Please select the exported annotation file to process:"
+    )
+    if not selected_file_name:
+        sys.exit(1)
+
+    # 3. Construct all necessary paths
+    exported_annotation_path = selected_dataset_path / selected_file_name
+    output_path = selected_dataset_path / f"manual_{selected_file_name}"
+    pre_annotation_path = selected_dataset_path / "annotations.json"
+
+    # 4. Select the processing mode
+    print("")
+    actions = [
+        "Filter out pre-annotations (finds manual changes)",
+        "Filter out images with no annotations (cleans a single file)",
+    ]
+    selected_action = _select_from_list(
+        actions, "What action would you like to perform?"
+    )
+
+    if selected_action == actions[0]:
+        # This is "Filter out pre-annotations"
+        if not pre_annotation_path.is_file():
+            print(
+                f"\nError: Pre-annotation file 'annotations.json' not found in {selected_dataset_path}."
+            )
+            print("Cannot compare to find manual changes.")
+            sys.exit(1)
+
+        filter_manual_annotations(
+            pre_annotation_path=pre_annotation_path,
+            exported_annotation_path=exported_annotation_path,
             output_path=output_path,
         )
+    elif selected_action == actions[1]:
+        # This is "Filter out unannotated images"
+        filter_unannotated_images(
+            exported_annotation_path=exported_annotation_path,
+            output_path=output_path,
+        )
+
+
+if __name__ == "__main__":
+    main()

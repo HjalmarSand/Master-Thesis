@@ -2282,7 +2282,7 @@ def run_roll_angle_training():
             training_sources=valid_training_sources,
             annotation_csv=annotation_csv_path,
             model_save_path=model_save_path,
-            num_epochs=200,
+            num_epochs=500,
         )
 
         return exit_code == 0

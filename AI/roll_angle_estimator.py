@@ -169,7 +169,7 @@ def train_roll_estimator(
     model_save_path: Path,
     num_epochs: int = 30,
     batch_size: int = 32,
-    learning_rate: float = 0.001,
+    learning_rate: float = 0.0005,
 ):
     print("\nStarting Roll Angle Estimator Training")
     print(f"Using data from {len(training_sources)} source(s).")
