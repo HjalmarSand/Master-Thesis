@@ -144,14 +144,13 @@ def filter_unannotated_images(exported_annotation_path, output_path):
     with open(input_annotation_path, "r") as f:
         data = json.load(f)
 
-    # --- Step 1: Find all image IDs that have annotations ---
+    # Find all image IDs that have annotations
     annotated_image_ids = set()
     for ann in data["annotations"]:
         annotated_image_ids.add(ann["image_id"])
 
     print(f"Found {len(annotated_image_ids)} images with annotations.")
 
-    # --- Step 2: Build the new COCO JSON file with filtered data ---
     final_coco = {
         "info": data.get("info", {}),
         "licenses": data.get("licenses", []),
@@ -171,7 +170,6 @@ def filter_unannotated_images(exported_annotation_path, output_path):
         if ann["image_id"] in annotated_image_ids:
             final_coco["annotations"].append(ann)
 
-    # --- Step 3: Save the final output ---
     print(
         f"Saving filtered annotations for {len(final_coco['images'])} images to {output_path}"
     )
@@ -182,10 +180,17 @@ def filter_unannotated_images(exported_annotation_path, output_path):
 
 # NOTE: Change paths here if for different datasets
 if __name__ == "__main__":
-    process_pre_annotations = False  # Set to False if you only want to filter unannotated images
-    
-    input_annotation_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset3/annotations/instances_default.json"
-    output_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset3/manual_annotations.json"
+
+    input_annotation_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset1/annotations/instances_default.json"
+    output_path=constants.PROJECT_ROOT / "AI/segformer_segmentation_annotations/dataset1/manual_annotations.json"
+
+    print("")
+    process_pre_annotations = input("Enter 1 for filtering of pre-annotated data before removing non-annotated data and 2 if only manually annotated data should be filtered: ")  
+
+    if process_pre_annotations == "1":
+        process_pre_annotations = True
+    elif process_pre_annotations == "2":
+        process_pre_annotations = False
 
     if process_pre_annotations:
         filter_manual_annotations(
