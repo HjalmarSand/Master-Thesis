@@ -10,14 +10,10 @@ IMAGES_DIR = PROJECT_ROOT / "images"
 # COLMAP directory
 COLMAP_DIR = PROJECT_ROOT / "colmap_fisheye_project"
 
-# Path to DSM-related data
-LIDAR_DATA_DIR = PROJECT_ROOT / "DSM_Data" / "cleaned_laser"
-
 LIDAR_SKYLINE_RESOLUTION = (
     64 * 24
 )  # The resolution of the skyline will become 5120 (i.e the number of pixels in the panorama) divided by this factor
 
-LIDAR_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM" / "lidar_skyline"
 
 DEM_CALC_MODE = "ORIGINAL"  # Options: "ORIGINAL", "FAST"
 
@@ -46,12 +42,15 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 PLOTS_DIR = OUTPUT_DIR / "plots"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
-# Simulated skylines and .tif file will here
-DEM_OUTPUT_DIR = PROJECT_ROOT / "databases" / "DEM"
-
 MEGALOC_DATABASE = PROJECT_ROOT / "megaloc_db.pkl"
 
 
 # Encoding
 NUM_WINDOWS = 4
 POOL_TARGET = (2, 2)
+
+DEM_DB_DIRNAME_PATTERN = (
+    "dem_{dataset}"  # dataset1 -> dem_dataset1, dataset2 -> dem_dataset2
+)
+
+DEM_MASK_BATCH_SIZE = 500
