@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -24,17 +25,19 @@ from tqdm import tqdm
 
 import constants
 from AI import evaluate_model, roll_angle_estimator
-from AI.finetune_placer import run_finetuning_stage
+from AI.fine_tune_encoder import run_finetuning_stage_pk
 from AI.plotting import create_cross_match_plot
 from AI.roll_angle_estimator import (
     visualize_model_features,
 )
 from DEM.DEM_skyline import (
+    calculate_skyline_similarity,
     create_and_save_grid,
     create_lidar_chunks,
     create_simplified_chunks,
     generate_skyline_mask_array,
     process_viewpoint_against_chunks,
+    visualize_comparison,
 )
 from image_processing import split_stacked_images
 from image_processing.create_panoramas import (
@@ -593,7 +596,7 @@ def run_prepare_lidar_assets():
             source_dir=lidar_source_dir,
             chunk_dir=raw_chunk_dir,
             manifest_path=db_dir / "raw_chunk_manifest.json",
-            chunk_tile_size=250,
+            chunk_tile_size=750,
         )
 
         print_separator("PART B: Filtering and Simplifying Chunks")
@@ -615,18 +618,26 @@ def run_prepare_lidar_assets():
             for chunk_path in tqdm(
                 simplified_files, desc="Manifesting Simplified Chunks"
             ):
-                with laspy.open(chunk_path) as f:
-                    header = f.header
-                    bounds = {
-                        "min_x": header.x_min,
-                        "max_x": header.x_max,
-                        "min_y": header.y_min,
-                        "max_y": header.y_max,
+                try:
+                    with laspy.open(chunk_path) as f:
+                        hdr = f.header
+                        pts = f.read()
+                        # Convert LAS integer coords to absolute real coords
+                        xs = pts.X * hdr.scales[0] + hdr.offsets[0]
+                        ys = pts.Y * hdr.scales[1] + hdr.offsets[1]
+                        min_x, max_x = float(xs.min()), float(xs.max())
+                        min_y, max_y = float(ys.min()), float(ys.max())
+                    simplified_manifest[chunk_path.stem] = {
+                        "path": str(chunk_path),
+                        "bounds": {
+                            "min_x": min_x,
+                            "max_x": max_x,
+                            "min_y": min_y,
+                            "max_y": max_y,
+                        },
                     }
-                simplified_manifest[chunk_path.stem] = {
-                    "path": str(chunk_path),
-                    "bounds": bounds,
-                }
+                except Exception as e:
+                    print(f"Warning: Could not read coords for {chunk_path.name}: {e}")
             with open(simplified_manifest_path, "w") as f:
                 json.dump(simplified_manifest, f, indent=2)
             print(f"Simplified manifest saved to: {simplified_manifest_path}")
@@ -646,6 +657,7 @@ def run_generate_paired_dem_skylines():
     GPS file using the efficient chunk-based method. It then calculates the yaw offset
     by comparing each DEM to its real panorama counterpart and saves the results.
     """
+
     print_stage_header(
         11,
         "GENERATE PAIRED DEM SKYLINES & YAW OFFSETS",
@@ -670,10 +682,14 @@ def run_generate_paired_dem_skylines():
             print("\nPlease select a dataset to process:")
             for i, dir_path in enumerate(dataset_dirs):
                 print(f"  [{i}]: {dir_path.name}")
-            choice_idx = int(input("Enter the number of the dataset: "))
-            if 0 <= choice_idx < len(dataset_dirs):
-                selected_dir = dataset_dirs[choice_idx]
-                break
+            try:
+                choice_idx = int(input("Enter the number of the dataset: "))
+                if 0 <= choice_idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[choice_idx]
+                    break
+            except ValueError:
+                pass
+            print("Invalid choice.")
 
         dataset_name = selected_dir.name
         dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
@@ -684,51 +700,146 @@ def run_generate_paired_dem_skylines():
             )
             return False
 
+        # Load manifest + diagnostics
+        print(f"Manifest path: {manifest_path}")
         with open(manifest_path, "r") as f:
             chunk_manifest = json.load(f)
+        print(f"Chunks in manifest: {len(chunk_manifest)}")
 
+        # Build R-tree
         print("Building R-tree index for simplified chunks...")
         p = index.Property(dimension=2)
         idx = index.Index(properties=p)
         chunk_paths_map = {}
+        # bounds diagnostics
+        bx, by = [], []
         for i, (stem, data) in enumerate(chunk_manifest.items()):
             b = data["bounds"]
             idx.insert(i, (b["min_x"], b["min_y"], b["max_x"], b["max_y"]))
             chunk_paths_map[i] = Path(data["path"])
+            bx.extend([b["min_x"], b["max_x"]])
+            by.extend([b["min_y"], b["max_y"]])
+        if bx and by:
+            print(f"Chunk X range: {min(bx):.3f} .. {max(bx):.3f}")
+            print(f"Chunk Y range: {min(by):.3f} .. {max(by):.3f}")
 
+        # Load GPS
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
+        print(f"GPS rows: {len(gps_df)}")
+        if len(gps_df) == 0:
+            print("No GPS rows to process.")
+            return False
+        print(
+            f"GPS easting range:  {gps_df['easting'].min():.3f} .. {gps_df['easting'].max():.3f}"
+        )
+        print(
+            f"GPS northing range: {gps_df['northing'].min():.3f} .. {gps_df['northing'].max():.3f}"
+        )
+        print(f"SEARCH_RADIUS = {constants.SEARCH_RADIUS}")
 
+        # Output dir
         dem_output_dir = selected_dir / "dem_skylines_paired"
         dem_output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"DEM paired output dir: {dem_output_dir}")
+        print(f"Existing paired files: {len(list(dem_output_dir.glob('*.npy')))}")
 
-        tasks = []
+        # FORCE override (skip 'exists' checks if True)
+        force = bool(int(os.environ.get("STAGE11_FORCE", "0"))) or bool(
+            getattr(constants, "STAGE11_FORCE", False)
+        )
+        if force:
+            print("FORCE mode: existing paired skylines will be regenerated.")
+
+        # Quick probe of first 5 GPS points for intersections
+        probe = 0
         for row in gps_df.itertuples():
-            image_number = Path(row.filename).stem
-            if (dem_output_dir / f"{image_number}.npy").exists():
-                continue
+            e, n = float(row.easting), float(row.northing)
+            r = constants.SEARCH_RADIUS
+            sb = (e - r, n - r, e + r, n + r)
+            ids = list(idx.intersection(sb))
+            print(f"[PROBE] e={e:.1f} n={n:.1f} -> {len(ids)} intersecting chunks")
+            probe += 1
+            if probe >= 5:
+                break
 
-            easting, northing = row.easting, row.northing
-            viewpoint_coords = (easting, northing, 1.5)
-            point_id = f"paired_{image_number}"
+        # TASK BUILD
+        def build_tasks(search_radius: float) -> list[tuple]:
+            hits = misses = 0
+            tasks_local: list[tuple] = []
+            for row in gps_df.itertuples():
+                image_number = Path(row.filename).stem
+                out_path = dem_output_dir / f"{image_number}.npy"
+                if (not force) and out_path.exists():
+                    continue
 
-            search_radius = constants.SEARCH_RADIUS
-            search_bounds = (
-                easting - search_radius,
-                northing - search_radius,
-                easting + search_radius,
-                northing + search_radius,
-            )
-            relevant_indices = list(idx.intersection(search_bounds))
-            if relevant_indices:
-                relevant_paths = [chunk_paths_map[i] for i in relevant_indices]
-                tasks.append((point_id, viewpoint_coords, relevant_paths))
-
-        if tasks:
+                easting, northing = float(row.easting), float(row.northing)
+                search_bounds = (
+                    easting - search_radius,
+                    northing - search_radius,
+                    easting + search_radius,
+                    northing + search_radius,
+                )
+                relevant_indices = list(idx.intersection(search_bounds))
+                if relevant_indices:
+                    hits += 1
+                    if hits <= 3:
+                        print(
+                            f"[HIT] paired_{image_number}: {len(relevant_indices)} chunks"
+                        )
+                    relevant_paths = [chunk_paths_map[i] for i in relevant_indices]
+                    tasks_local.append(
+                        (
+                            f"paired_{image_number}",
+                            (easting, northing, 1.5),
+                            relevant_paths,
+                        )
+                    )
+                else:
+                    misses += 1
+                    if misses <= 3:
+                        print(
+                            f"[MISS] paired_{image_number}: 0 chunks within {search_radius} m"
+                        )
             print(
-                f"Generating {len(tasks)} new DEM skylines for {selected_dir.name}..."
+                f"Task build summary (radius={search_radius}): hits={hits}, misses={misses}, tasks={len(tasks_local)}"
             )
+            return tasks_local
+
+        tasks = build_tasks(constants.SEARCH_RADIUS)
+
+        # Auto-widen (one retry) if no tasks
+        if len(tasks) == 0:
+            big_radius = max(constants.SEARCH_RADIUS * 2, 5000.0)
+            print(
+                f"No tasks with SEARCH_RADIUS={constants.SEARCH_RADIUS}. Retrying once with {big_radius} m..."
+            )
+            tasks = build_tasks(big_radius)
+
+        # Single-point DEBUG attempt if still no tasks
+        if len(tasks) == 0:
+            r0 = gps_df.iloc[0]
+            e0, n0 = float(r0.easting), float(r0.northing)
+            r = max(constants.SEARCH_RADIUS, 5000.0)
+            sb = (e0 - r, n0 - r, e0 + r, n0 + r)
+            ids = list(idx.intersection(sb))
+            print(f"[SINGLE TEST] chunks near first point (r={r}): {len(ids)}")
+            if ids:
+                pid = "paired_DEBUG"
+                vp = (e0, n0, 1.5)
+                paths = [chunk_paths_map[i] for i in ids]
+                pid, sky = process_viewpoint_against_chunks((pid, vp, paths))
+                if sky is not None:
+                    np.save(dem_output_dir / "DEBUG.npy", sky)
+                    print("[SINGLE TEST] Wrote DEBUG.npy")
+                else:
+                    print("[SINGLE TEST] Worker returned None (filtered out / empty)")
+
+        # GENERATE DEM SKYLINES
+        if tasks:
+            print(f"Generating {len(tasks)} DEM skylines for {selected_dir.name}...")
             num_processes = max(1, cpu_count() - 2)
+            saved = 0
             with Pool(processes=num_processes, maxtasksperchild=1) as pool:
                 for result in tqdm(
                     pool.imap_unordered(process_viewpoint_against_chunks, tasks),
@@ -739,15 +850,34 @@ def run_generate_paired_dem_skylines():
                         point_id, final_skyline = result
                         image_number = point_id.split("_")[1]
                         np.save(dem_output_dir / f"{image_number}.npy", final_skyline)
+                        saved += 1
+            print(f"Saved {saved} paired DEM skylines to {dem_output_dir}")
         else:
-            print("All DEM skylines are already generated.")
+            print("All DEM skylines are already generated (or no intersections found).")
 
+        # YAW OFFSET CALC
         print("\nCalculating yaw offsets by comparing DEMs to real panoramas...")
         offset_results = []
-        real_mask_dir = selected_dir / "binary_panorama"  # Use the unaligned panoramas
+
+        real_mask_dir = selected_dir / "binary_panorama"  # use unaligned panoramas
+        dem_output_dir = selected_dir / "dem_skylines_paired"
+
+        # Existing offsets (append-only unless FORCE)
+        offsets_save_path = selected_dir / "yaw_offsets.csv"
+        existing_offsets = set()
+        if offsets_save_path.exists() and not force:
+            try:
+                ex_df = pd.read_csv(offsets_save_path)
+                existing_offsets = set(ex_df["filename"].tolist())
+                print(f"Existing yaw offsets: {len(existing_offsets)}")
+            except Exception:
+                pass
 
         for row in tqdm(gps_df.itertuples(), total=len(gps_df), desc="Calculating Yaw"):
             original_filename = row.filename
+            if (not force) and (original_filename in existing_offsets):
+                continue
+
             image_number = Path(original_filename).stem
 
             dem_skyline_path = dem_output_dir / f"{image_number}.npy"
@@ -756,7 +886,7 @@ def run_generate_paired_dem_skylines():
             if not dem_skyline_path.exists() or not real_mask_path.exists():
                 continue
 
-            # Load real and simulated data
+            # Load real DEM/real masks
             real_mask = np.array(Image.open(real_mask_path).convert("L"))
             dem_elevations = np.load(dem_skyline_path)
 
@@ -778,8 +908,14 @@ def run_generate_paired_dem_skylines():
 
         if offset_results:
             offsets_df = pd.DataFrame(offset_results)
-            offsets_save_path = selected_dir / "yaw_offsets.csv"
-            offsets_df.to_csv(offsets_save_path, index=False, float_format="%.4f")
+            if offsets_save_path.exists() and not force:
+                # Append new rows
+                old = pd.read_csv(offsets_save_path)
+                merged = pd.concat([old, offsets_df], ignore_index=True)
+                merged.drop_duplicates(subset=["filename"], keep="last", inplace=True)
+                merged.to_csv(offsets_save_path, index=False, float_format="%.4f")
+            else:
+                offsets_df.to_csv(offsets_save_path, index=False, float_format="%.4f")
             print(f"Yaw offsets saved to: {offsets_save_path}")
         else:
             print("No new yaw offsets were calculated.")
@@ -869,6 +1005,148 @@ def run_panorama_alignment():
         return False
 
 
+def run_paired_visualization():
+    """
+    Stage 13: Compare a real panorama (aligned) to the EXACT paired DEM skyline
+    generated in Stage 11 (dem_skylines_paired/<image_number>.npy).
+    Saves a 3-panel figure: Original (unaligned) → DEM (paired) → Real (aligned).
+    """
+    print_stage_header(
+        13,
+        "PAIRED DEM VISUALIZATION",
+        "Comparing a real panorama to its EXACT paired DEM skyline.",
+    )
+    try:
+        project_root = Path(__file__).parent
+
+        # 1) Select dataset that has Stage 11 outputs
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir()
+                and (d / "gps_interpolated_with_orientation.csv").is_file()
+                and (d / "dem_skylines_paired").is_dir()
+                and (d / "yaw_offsets.csv").is_file()
+            ]
+        )
+        if not dataset_dirs:
+            print("No datasets with paired DEM skylines found. Run Stage 11 first.")
+            return False
+
+        selected_dir = None
+        while True:
+            print("\nSelect a dataset for paired visualization:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice = input("Enter number: ")
+            try:
+                idx = int(choice)
+                if 0 <= idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[idx]
+                    break
+            except ValueError:
+                pass
+            print("Invalid choice.")
+
+        dataset_name = selected_dir.name
+        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        yaw_csv_path = selected_dir / "yaw_offsets.csv"
+        paired_dir = selected_dir / "dem_skylines_paired"
+        real_aligned = selected_dir / "binary_panorama_aligned"
+        real_unaligned = selected_dir / "binary_panorama"
+
+        # 2) Let user pick an image by its 'n' or filename from GPS CSV
+        gps_df = pd.read_csv(gps_csv_path)
+        print(
+            "\nEnter either an exact filename (e.g. '0123.jpg') or a value from column 'n'."
+        )
+        user_key = input("Filename or n: ").strip()
+
+        row = None
+        if user_key.endswith(".jpg") or user_key.endswith(".png"):
+            row = gps_df[gps_df["filename"] == user_key]
+        else:
+            try:
+                n_val = int(user_key)
+                row = gps_df[gps_df["n"] == n_val]
+            except ValueError:
+                pass
+
+        if row is None or row.empty:
+            print("Could not find a matching row in GPS CSV.")
+            return False
+
+        # 3) Resolve image number and paths
+        original_filename = row["filename"].iloc[0]
+        image_number = Path(original_filename).stem  # '0123' from '0123.jpg'
+
+        dem_vec_path = paired_dir / f"{image_number}.npy"
+        real_aligned_path = real_aligned / f"binary_panorama_{image_number}.png"
+        real_unaligned_path = real_unaligned / f"binary_panorama_{image_number}.png"
+
+        if not dem_vec_path.exists():
+            print(f"ERROR: Paired DEM skyline not found: {dem_vec_path}")
+            return False
+        if not real_aligned_path.exists():
+            print(f"ERROR: Aligned real panorama not found: {real_aligned_path}")
+            print("Run Stage 12 to create 'binary_panorama_aligned/'.")
+            return False
+        if not real_unaligned_path.exists():
+            print(f"WARNING: Unaligned panorama not found: {real_unaligned_path}")
+            print("The top panel will still render using the aligned image duplicated.")
+
+        # 4) Load data
+        dem_elevations = np.load(dem_vec_path)  # vector from Stage 11
+        num_bins = len(dem_elevations)
+        angles = np.linspace(0, 360, num_bins, endpoint=False)
+        dem_mask = generate_skyline_mask_array(
+            angles,
+            dem_elevations,
+            constants.PANORAMA_IMG_WIDTH,
+            constants.PANORAMA_IMG_HEIGHT,
+        )
+
+        aligned_real_mask = np.array(Image.open(real_aligned_path).convert("L"))
+        if real_unaligned_path.exists():
+            original_real_mask = np.array(Image.open(real_unaligned_path).convert("L"))
+        else:
+            original_real_mask = aligned_real_mask  # fallback
+
+        # 5) Get yaw for title context (optional)
+        yaw_df = pd.read_csv(yaw_csv_path)
+        yaw_lookup = {r.filename: r.yaw_offset_deg for r in yaw_df.itertuples()}
+        yaw_offset = float(yaw_lookup.get(f"{image_number}.jpg", 0.0))
+
+        # 6) IoU against aligned mask
+        similarity_score = calculate_skyline_similarity(dem_mask, aligned_real_mask)
+
+        # 7) Save the 3-panel plot
+        out_dir = project_root / "output_plots" / f"paired_visualization_{dataset_name}"
+        out_path = out_dir / f"{image_number}_paired_comparison.png"
+        visualize_comparison(
+            original_real_mask=original_real_mask,
+            dem_mask=dem_mask,
+            aligned_real_mask=aligned_real_mask,
+            point_id=f"paired_{image_number}",
+            real_image_name=f"binary_panorama_{image_number}.png",
+            similarity_score=similarity_score,
+            yaw_offset=yaw_offset,
+            save_path=out_path,
+        )
+
+        print(f"\nSaved paired comparison to: {out_path}")
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during paired visualization: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 # ! Warning: This method will take an enormous amount of time to run. If we want to have a finer grid than 25 meters, a good method now would be to shift the start and end point by 12,5 meters, and then run another 25 meter grid calculation.
 
 
@@ -903,7 +1181,6 @@ def run_lidar_skyline_generation():
         complete_skylines_dir.mkdir(parents=True, exist_ok=True)
         mask_batches_dir.mkdir(parents=True, exist_ok=True)
 
-        # keep your batch size (moved to constants for clarity)
         MASK_BATCH_SIZE = getattr(constants, "DEM_MASK_BATCH_SIZE", 500)
 
         # PART 1: Load Prepared Assets
@@ -2888,6 +3165,7 @@ def main():
             run_generate_paired_dem_skylines,
         ),
         12: ("APPLY YAW ALIGNMENT TO PANORAMAS", run_panorama_alignment),
+        13: ("Visualize Paired DEM vs Real (Exact Match)", run_paired_visualization),
         # [PART 3: FINGERPRINTING & DATABASE GENERATION]
         20: ("Generate Grid-Based DEM Skyline Database", run_lidar_skyline_generation),
         21: ("Encode REAL Aligned Panoramas (Fourier)", run_skyline_fourier_encoder),
@@ -2918,7 +3196,7 @@ def main():
         54: ("Visualize CNN Features", run_feature_visualization),
         55: (
             "Fine-tune Skyline Feature Extractor",
-            run_finetuning_stage,
+            run_finetuning_stage_pk,
         ),  # TODO! Maybe, when we try to finetune on images that barely have any islands in them, we are confusing the network. The loss would be high for them if they are almost only straight lines. It could prove useful to try to finetune the encoder on images with a lot of islands and then accept poor performance on images too far from land.
         # NOTE: We have an issue with low resolution images. This is making the segmentation very difficult. Even annotating the images ourselves is very hard because of the low resolution.
         56: ("Create MegaLoc Database", run_megaloc_database_creation),
