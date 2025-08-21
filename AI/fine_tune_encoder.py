@@ -735,7 +735,7 @@ def triplet_semihard_loss_cosine_coords_forced(
 
     # Pairwise margin matrix for mining and loss
     if iou_mat is not None:
-        m_eff = (margin + gamma * (1.0 - iou_mat.to(device))).clamp_min(0.0)  # (B,B)
+        m_eff = torch.clamp(margin + gamma * (1 - iou_mat), min=margin)  # (B,B)
     else:
         m_eff = sim.new_full((B, B), float(margin))
 
@@ -1049,7 +1049,7 @@ def train_placer_model_pk(
     P: int = 16,
     K: int = 2,
     margin: float = 0.1,
-    patience: int = 10,
+    gamma: float = 0.4,
     r_exclude_m: float = 50.0,
     use_amp: bool = True,
 ):
@@ -1060,11 +1060,19 @@ def train_placer_model_pk(
         dataset_dir, P=P, K=K, min_iou=0.97, max_yaw_dev_deg=15.0
     )
 
+    print(f"Train: {len(train_ds)} items, {len(train_ds.key2label)} unique IDs")
+    print(f"Val:   {len(val_ds)} items, {len(val_ds.key2label)} unique IDs")
+
     visualize_batch(train_loader, out_dir="debug_batch", num=8)
     coord_space = getattr(train_ds, "coord_space", "geo")
     print(f"Coordinate space detected: {coord_space}")
 
-    model = EmbeddingNet(embedding_dim=128, freeze_layers=19).to(device)
+    embedding_dim = 128
+    freeze_layers = 12
+    model = EmbeddingNet(embedding_dim=embedding_dim, freeze_layers=freeze_layers).to(
+        device
+    )
+    print(f"Using embedding dim {embedding_dim} and freezing {freeze_layers}")
 
     head_params = list(model.backbone.classifier.parameters())
     backbone_params = [
@@ -1084,7 +1092,9 @@ def train_placer_model_pk(
 
     best_score = -1.0
     epochs_no_improve = 0
-    best_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
+    best_path = model_save_path.with_name(
+        f"{model_save_path.stem}_best.pth"
+    )  # finetuned_placer_ALL_best.pth
 
     tqdm.write("Starting PxK training with geo/utm-aware semi-hard mining...")
     for epoch in range(num_epochs):
@@ -1151,8 +1161,8 @@ def train_placer_model_pk(
                     margin=margin,
                     r_exclude_m=r_exclude_m,
                     force_neg_mask=force_neg_mask,
-                    iou_mat=iou_mat,  # NEW
-                    gamma=0.2,  # try 0.1–0.5
+                    iou_mat=iou_mat,
+                    gamma=gamma,  # try 0.1–0.5
                 )
 
             if scaler.is_enabled():
@@ -1185,7 +1195,7 @@ def train_placer_model_pk(
 
         r1, r5, r10 = recalls[1], recalls[5], recalls[10]
         val_loss = compute_val_loss(
-            model, val_loader, coord_space, margin, r_exclude_m, device, gamma=0.2
+            model, val_loader, coord_space, margin, r_exclude_m, device, gamma=gamma
         )
         tqdm.write(
             f"Epoch {epoch + 1} | TrainLoss {avg_train:.4f} | ValLoss {val_loss:.4f} | "
@@ -1256,9 +1266,9 @@ def run_finetuning_stage_pk():
             num_epochs=100,
             P=P,
             K=K,
-            margin=0.0,
-            patience=10,
-            r_exclude_m=20.0,
+            margin=0.05,  # Will be base margin. If r_exclude is small, we will effectively force images that are similar to be separated by some base margin that might be too high
+            gamma=3.0,  # Gamma will be multiplied with 1 - iou between two negative points, as an added margin required. This means that images with very different iou naturally require a larger margin in the encoding
+            r_exclude_m=50.0,  # The higher r_exclude, the higher we can select the base margin.
         )
         return True
     except Exception as e:
