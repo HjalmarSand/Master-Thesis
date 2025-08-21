@@ -13,6 +13,9 @@ from torchvision import transforms
 from torchvision.models import ResNet18_Weights, resnet18
 from tqdm import tqdm
 
+#TODO: Investigate some things, firstly, we are using cosine similarity it is probably better to use a triplet loss.  
+#Secondly, we probably want to try investigating the 
+
 IMG_DIR = "images/"
 IMG_SIZE = 256
 BATCH_SIZE = 16
@@ -144,7 +147,6 @@ class SkylinePairDataset(Dataset):
             other_cam_img,
             torch.tensor(true_distance, dtype=torch.float32),
         )
-
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
