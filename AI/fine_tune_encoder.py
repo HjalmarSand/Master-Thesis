@@ -64,6 +64,8 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
         transform=None,
         val_split: float = 0.1,
         random_state: int = 42,
+        min_iou: float = 0.97,  # Keep only data where the iou with dem and real aligned was above 0.97
+        max_yaw_dev_deg: float = 15.0,  # keep only samples within ± this of dominant yaw span
     ):
         super().__init__()
         assert mode in ("train", "val")
@@ -72,6 +74,32 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
         import pandas as pd
 
         rng = np.random.default_rng(random_state)
+
+        def circ_abs_diff_deg(a, b):
+            """minimum absolute angular difference in degrees, scalar or numpy arrays"""
+            d = np.abs((a - b + 180.0) % 360.0 - 180.0)
+            return d
+
+        def find_dominant_yaw_center(
+            angles_deg: np.ndarray, half_width_deg: float = 15.0
+        ) -> float:
+            """
+            Find the center (0..360) of the densest ±half_width_deg span.
+            Robust to wrap-around and works with real-valued angles.
+            """
+            if angles_deg.size == 0:
+                return 0.0
+            # Sample candidate centers each degree for simplicity
+            centers = np.arange(360.0)
+            # For each center, count how many angles fall within the window
+            counts = np.array(
+                [
+                    np.sum(circ_abs_diff_deg(angles_deg, c) <= half_width_deg)
+                    for c in centers
+                ]
+            )
+            best_idx = int(np.argmax(counts))
+            return float(centers[best_idx])
 
         per_ds_ids = []
         per_ds_id_to_paths = []
@@ -85,6 +113,77 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
             if not (real_dir.is_dir() and dem_dir.is_dir() and gps_csv.is_file()):
                 raise FileNotFoundError(f"Required data not found in {ds_dir}")
 
+            # read yaw_offsets.csv and build whitelist by IoU AND yaw proximity
+            iou_yaw_whitelist: set[str] | None = None
+            yaw_csv = ds_dir / "yaw_offsets.csv"
+            try:
+                if yaw_csv.exists() and yaw_csv.stat().st_size > 0:
+                    yaw_df = pd.read_csv(yaw_csv)
+                    cols_lower = {c.lower(): c for c in yaw_df.columns}
+
+                    # flexible column picking
+                    filename_col = cols_lower.get("filename") or cols_lower.get("file")
+                    iou_col = (
+                        cols_lower.get("iou")
+                        or cols_lower.get("best_iou")
+                        or cols_lower.get("post_alignment_iou")
+                    )
+                    yaw_col = (
+                        cols_lower.get("yaw_offset_deg")
+                        or cols_lower.get("yaw_offset")
+                        or cols_lower.get("yaw_deg")
+                        or cols_lower.get("yaw")
+                        or cols_lower.get("offset_deg")
+                    )
+
+                    if filename_col is None or iou_col is None or yaw_col is None:
+                        print(
+                            f"[{ds_dir.name}] yaw_offsets.csv missing required columns; not filtering by yaw/IoU."
+                        )
+                    else:
+                        tmp = yaw_df[[filename_col, iou_col, yaw_col]].dropna()
+                        # stems without extension
+                        stems = (
+                            tmp[filename_col].astype(str).apply(lambda s: Path(s).stem)
+                        )
+                        ious = tmp[iou_col].astype(float).to_numpy()
+                        yaws = tmp[yaw_col].astype(float).to_numpy() % 360.0
+
+                        # 1) IoU gate
+                        iou_mask = ious >= float(min_iou)
+
+                        # 2) Find dominant yaw center on the IoU-passed subset (more robust)
+                        yaws_for_mode = yaws[iou_mask]
+                        if yaws_for_mode.size > 0:
+                            center = find_dominant_yaw_center(
+                                yaws_for_mode, half_width_deg=max_yaw_dev_deg
+                            )
+                            yaw_close_mask = (
+                                circ_abs_diff_deg(yaws, center) <= max_yaw_dev_deg
+                            )
+                        else:
+                            # If nothing passes IoU, we’ll end up with empty whitelist; still compute safely
+                            center = 0.0
+                            yaw_close_mask = np.zeros_like(yaws, dtype=bool)
+
+                        final_mask = iou_mask & yaw_close_mask
+                        iou_yaw_whitelist = set(stems[final_mask].astype(str))
+
+                        kept = int(final_mask.sum())
+                        print(
+                            f"[{ds_dir.name}] IoU+Yaw filter: center≈{center:.1f}°, "
+                            f"keeping {kept} with IoU≥{min_iou:.2f} and |Δyaw|≤{max_yaw_dev_deg:.1f}°"
+                        )
+                else:
+                    print(
+                        f"[{ds_dir.name}] No yaw_offsets.csv; falling back to IoU-only (or none)."
+                    )
+            except Exception as e:
+                print(
+                    f"[{ds_dir.name}] Failed to read yaw_offsets.csv ({e}); not filtering by yaw/IoU."
+                )
+
+            # GPS & coord space detection
             gps_df = pd.read_csv(gps_csv)
             cols_lower = {c.lower(): c for c in gps_df.columns}
 
@@ -116,10 +215,22 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
                 c1_col, c2_col = east_col, north_col
             coord_spaces.append(coord_space)
 
+            # build per-dataset id maps with the combined filter
             id_to_paths = {}
             id_to_coord = {}
+            kept, skipped = 0, 0
+
             for _, row in gps_df.iterrows():
                 image_number = Path(row[fname_col]).stem
+
+                # If whitelist exists, require membership
+                if (
+                    iou_yaw_whitelist is not None
+                    and image_number not in iou_yaw_whitelist
+                ):
+                    skipped += 1
+                    continue
+
                 real_path = real_dir / f"binary_panorama_{image_number}.png"
                 dem_path = dem_dir / f"{image_number}.npy"
                 if real_path.exists() and dem_path.exists():
@@ -127,10 +238,14 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
                     c1 = float(row[c1_col])
                     c2 = float(row[c2_col])
                     id_to_coord[image_number] = (c1, c2)
+                    kept += 1
+
+            if iou_yaw_whitelist is not None:
+                print(f"[{ds_dir.name}] Filter skipped {skipped} pairs; kept {kept}.")
 
             ids = sorted(id_to_paths.keys())
             if not ids:
-                raise ValueError(f"No valid pairs in {ds_dir}")
+                raise ValueError(f"No valid pairs in {ds_dir} after yaw/IoU filtering")
 
             per_ds_ids.append(ids)
             per_ds_id_to_paths.append(id_to_paths)
@@ -138,13 +253,12 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
 
         if len(set(coord_spaces)) != 1:
             raise ValueError(
-                f"Mixed coord spaces across datasets: {coord_spaces}. "
-                "Select datasets with the same coordinate system."
+                f"Mixed coord spaces across datasets: {coord_spaces}. Select datasets with the same coordinate system."
             )
         self.coord_space = coord_spaces[0]
 
-        train_pairs = []
-        val_pairs = []
+        # per-dataset train/val split
+        train_pairs, val_pairs = [], []
         for ds_idx, ids in enumerate(per_ds_ids):
             ids = np.array(ids)
             n = len(ids)
@@ -161,7 +275,6 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
                 val_pairs += [(ds_idx, img_id) for img_id in chosen]
 
         chosen_pairs = train_pairs if mode == "train" else val_pairs
-
         unique_keys = sorted(set(chosen_pairs))
         self.key2label = {key: i for i, key in enumerate(unique_keys)}
 
@@ -478,6 +591,36 @@ def visualize_batch(train_loader, out_dir="debug_batch", num=8):
     print(f"Wrote: {out_dir}/images_grid.png and {out_dir}/profiles.png")
 
 
+def despike_columns(
+    rows: np.ndarray, spike_abs_px: int = 20, neighbor_agree_tol_px: int = 5
+) -> np.ndarray:
+    """
+    rows: int array shape (W,), 'first ground row' per column (0=top).
+    Replace 1-px spikes where the middle column differs from both neighbors
+    by > spike_abs_px, while neighbors are close to each other (bridge).
+    """
+    r = rows.astype(np.int32, copy=True)
+    if r.size < 3:
+        return r
+
+    left = r[:-2]
+    mid = r[1:-1]
+    right = r[2:]
+
+    # neighbors agree?
+    neighbors_close = np.abs(left - right) <= neighbor_agree_tol_px
+    # middle far from BOTH neighbors?
+    mid_far_left = np.abs(mid - left) > spike_abs_px
+    mid_far_right = np.abs(mid - right) > spike_abs_px
+    spike_mask_center = neighbors_close & mid_far_left & mid_far_right
+
+    # replacement = average of neighbors (or their median)
+    repl = (left + right) // 2
+
+    r[1:-1][spike_mask_center] = repl[spike_mask_center]
+    return r
+
+
 def dem_vector_to_mask(
     elevations: np.ndarray,
     output_width: int,
@@ -513,6 +656,9 @@ def dem_vector_to_mask(
     rows = np.clip(
         np.round(((top - e_interp) / v_fov_deg) * output_height), 0, output_height
     ).astype(int)
+
+    # remove one-pixel needles
+    rows = despike_columns(rows, spike_abs_px=20, neighbor_agree_tol_px=5)
 
     mask = np.zeros((output_height, output_width), dtype=np.uint8)
     for x, y in enumerate(rows):
@@ -616,7 +762,7 @@ def triplet_semihard_loss_cosine_coords_forced(
     # pick per-anchor margin for the chosen negative
     m_anchor = m_eff[torch.arange(B, device=device), chosen_neg_idx]  # (B,)
 
-    print(f"Using margin {m_anchor}")
+    # print(f"Using margin {m_anchor}")
 
     loss = torch.clamp(d_ap - d_an + m_anchor, min=0).mean()
     return loss
@@ -630,6 +776,8 @@ def build_pk_dataloaders(
     random_state: int = 42,
     num_workers: int = 4,
     pin_memory: bool = True,
+    min_iou: float = 0.95,
+    max_yaw_dev_deg: float = 15.0,
 ):
     if isinstance(dataset_dir, (list, tuple)):
         dataset_dirs = list(dataset_dir)
@@ -642,6 +790,8 @@ def build_pk_dataloaders(
         transform=make_train_transform(),
         val_split=val_split,
         random_state=random_state,
+        min_iou=min_iou,
+        max_yaw_dev_deg=max_yaw_dev_deg,
     )
     val_ds = SkylineIdentityMultiDataset(
         dataset_dirs,
@@ -649,6 +799,8 @@ def build_pk_dataloaders(
         transform=make_val_transform(),
         val_split=val_split,
         random_state=random_state,
+        min_iou=min_iou,
+        max_yaw_dev_deg=max_yaw_dev_deg,
     )
 
     train_loader = DataLoader(
@@ -905,8 +1057,9 @@ def train_placer_model_pk(
     print(f"Using device: {device}")
 
     train_ds, val_ds, train_loader, val_loader = build_pk_dataloaders(
-        dataset_dir, P=P, K=K
+        dataset_dir, P=P, K=K, min_iou=0.97, max_yaw_dev_deg=15.0
     )
+
     visualize_batch(train_loader, out_dir="debug_batch", num=8)
     coord_space = getattr(train_ds, "coord_space", "geo")
     print(f"Coordinate space detected: {coord_space}")

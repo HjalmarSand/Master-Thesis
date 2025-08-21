@@ -13,6 +13,8 @@ import laspy
 import matplotlib
 from matplotlib import pyplot as plt
 
+from DEM import DEM_skyline
+
 matplotlib.use("TkAgg")
 import zipfile
 
@@ -902,15 +904,32 @@ def run_generate_paired_dem_skylines():
 
             # Calculate yaw offset
             yaw_offset = skyline_matcher.find_yaw_offset(dem_mask, real_mask)
+
+            # Align real mask by the found yaw (positive yaw = roll right)
+            width = real_mask.shape[1]
+            pixel_shift = int(round((yaw_offset / 360.0) * width))
+            aligned_real_mask = np.roll(real_mask, shift=pixel_shift, axis=1)
+
+            # IoU after alignment
+            iou_aligned = DEM_skyline.calculate_skyline_similarity(
+                dem_mask, aligned_real_mask
+            )
+
             offset_results.append(
-                {"filename": original_filename, "yaw_offset_deg": yaw_offset}
+                {
+                    "filename": original_filename,
+                    "yaw_offset_deg": float(yaw_offset),
+                    "iou": float(iou_aligned),
+                }
             )
 
         if offset_results:
             offsets_df = pd.DataFrame(offset_results)
             if offsets_save_path.exists() and not force:
-                # Append new rows
                 old = pd.read_csv(offsets_save_path)
+                # if old file lacks 'iou', create it so concat doesn't complain
+                if "iou" not in old.columns:
+                    old["iou"] = np.nan
                 merged = pd.concat([old, offsets_df], ignore_index=True)
                 merged.drop_duplicates(subset=["filename"], keep="last", inplace=True)
                 merged.to_csv(offsets_save_path, index=False, float_format="%.4f")

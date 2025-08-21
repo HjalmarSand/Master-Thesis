@@ -15,7 +15,7 @@ def find_horizon_roll_angle(image: np.ndarray) -> float or None:
     Analyzes an image to find the dominant horizon line and returns its roll angle.
     This is the core detection logic.
     """
-    # --- Tuning Parameters (can be moved to a config file or constants at the top) ---
+    # Tuning Parameters (can be moved to a config file or constants at the top)
     CANNY_THRESHOLD_1 = 50
     CANNY_THRESHOLD_2 = 150
     BLUR_KERNEL_SIZE = (5, 5)
@@ -342,7 +342,7 @@ def build_panoramas(
                 f"Warning: Mismatched height for Cam2 images of {original_filename}. Skipping Cam2 pano."
             )
 
-        # --- CREATE FINAL 360 PANORAMA using pre-loaded images ---
+        # CREATE FINAL 360 PANORAMA using pre-loaded images ---
         # The `use_edge_detection` flag is removed as the logic is now inside this function.
         # If you still need it, you would call `create_panorama_edge_detection` here instead.
         final_panorama = create_panorama(img_c2_r, img_c1_l, img_c1_r, img_c2_l)

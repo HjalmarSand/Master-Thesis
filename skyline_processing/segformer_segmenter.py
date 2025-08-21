@@ -18,8 +18,54 @@ from xml.dom import minidom
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from PIL import Image
+from scipy import ndimage as ndi
 
 import constants
+
+
+def enforce_top_sky_bottom_ground(
+    mask_u8: np.ndarray, connectivity: int = 4
+) -> np.ndarray:
+    """
+    Enforce:
+      - Any white component NOT touching the TOP row becomes black.
+      - Any black component NOT touching the BOTTOM row becomes white.
+    Input:  HxW uint8 mask (255=sky, 0=ground)
+    Output: HxW uint8 mask (255=sky, 0=ground)
+    """
+    assert mask_u8.dtype == np.uint8
+    sky0 = mask_u8 >= 128  # True = white (sky), False = black (ground)
+    ground0 = ~sky0
+    H, W = sky0.shape
+
+    # 4- or 8-connectivity struct (1=4-connected, 2=8-connected in SciPy)
+    conn_rank = 1 if connectivity == 4 else 2
+    struct = ndi.generate_binary_structure(2, conn_rank)
+
+    # sky: keep only components that touch the TOP
+    lab_s, n_s = ndi.label(sky0, structure=struct)
+    if n_s > 0:
+        top_labels = np.unique(lab_s[0, :])
+        top_labels = top_labels[top_labels != 0]  # drop background label 0
+        sky_keep = np.isin(lab_s, top_labels)
+    else:
+        sky_keep = np.zeros_like(sky0, dtype=bool)
+
+    # ground: keep only components that touch the BOTTOM
+    lab_g, n_g = ndi.label(ground0, structure=struct)
+    if n_g > 0:
+        bot_labels = np.unique(lab_g[-1, :])
+        bot_labels = bot_labels[bot_labels != 0]  # drop background label 0
+        ground_keep = np.isin(lab_g, bot_labels)
+    else:
+        ground_keep = np.zeros_like(ground0, dtype=bool)
+
+    # Apply the rules directly on the ORIGINAL mask:
+    # - sky not top-connected -> black
+    # - ground not bottom-connected -> white
+    sky_final = sky_keep | (ground0 & (~ground_keep))
+
+    return np.where(sky_final, 255, 0).astype(np.uint8)
 
 
 class SemanticSegmenter:
@@ -205,16 +251,22 @@ class SemanticSegmenter:
         color_mask = cmap_rgb[class_id_map]
         return Image.fromarray(color_mask)
 
-    def process_directory(self, input_dir, output_dir_black_white, output_dir_overlay):
+    def process_directory(
+        self,
+        input_dir,
+        output_dir_black_white,
+        output_dir_overlay,
+    ):
         """
-        Processes all images, saving binary masks and/or overlay images to the
-        specified directories. If an output directory is None, that step is skipped.
+        Segment all images in input_dir, save cleaned binary masks and optional overlays.
+        Cleaning uses a strict connectivity rule:
+        - only sky touching TOP remains white
+        - only ground touching BOTTOM remains black
         """
         if not self.model:
             print("Model not loaded, cannot process directory.")
             return 1
 
-        # Only create directories if they are not None
         if output_dir_black_white:
             output_dir_black_white.mkdir(parents=True, exist_ok=True)
         if output_dir_overlay:
@@ -239,43 +291,39 @@ class SemanticSegmenter:
                 ).exists()
             )
 
-            # If nothing to produce, skip heavy inference
             if not do_black_white and not do_overlay:
                 continue
 
-            segmentation_data = self._segment_single_image(str(image_file))
-            if not segmentation_data:
+            seg = self._segment_single_image(str(image_file))
+            if not seg:
                 continue
 
-            class_map = segmentation_data["class_id_map"]
-            original_pil = segmentation_data["original_image_pil"]
+            class_map = seg["class_id_map"]
+            original_pil = seg["original_image_pil"]
 
-            # Binary model -> use 0/1 directly; multiclass -> compare to sky_id
+            # Bool sky from logits/classes
             if self.is_binary:
                 sky_mask_bool = class_map.astype(bool)
             else:
                 sky_mask_bool = class_map == self.sky_id
 
+            # Apply connectivity rule
+            raw_mask_u8 = sky_mask_bool.astype(np.uint8) * 255
+            cleaned_mask_u8 = enforce_top_sky_bottom_ground(raw_mask_u8, connectivity=8)
+
             if do_black_white:
-                output_binary_bw_file = (
-                    output_dir_black_white / f"binary_{base_name}.png"
-                )
-                Image.fromarray(sky_mask_bool.astype(np.uint8) * 255, "L").save(
-                    output_binary_bw_file
-                )
+                out_bw = output_dir_black_white / f"binary_{base_name}.png"
+                Image.fromarray(cleaned_mask_u8, "L").save(out_bw)
 
             if do_overlay:
-                output_binary_overlay_file = (
-                    output_dir_overlay / f"binary_overlay_{base_name}.png"
-                )
-                overlay = Image.new("RGBA", original_pil.size, (0, 0, 255, 0))
-                overlay_pixels = np.array(overlay)
-                overlay_pixels[sky_mask_bool] = [0, 0, 255, 128]  # a bit stronger alpha
-                overlay = Image.fromarray(overlay_pixels, "RGBA")
-                original_rgba = original_pil.convert("RGBA")
-                Image.alpha_composite(original_rgba, overlay).save(
-                    output_binary_overlay_file
-                )
+                out_overlay = output_dir_overlay / f"binary_overlay_{base_name}.png"
+                # Build RGBA overlay directly from numpy (no putalpha with arrays)
+                H, W = cleaned_mask_u8.shape
+                ov = np.zeros((H, W, 4), dtype=np.uint8)
+                ov[cleaned_mask_u8 > 0] = [0, 0, 255, 128]  # blue, semi-transparent
+                overlay_img = Image.fromarray(ov, "RGBA")
+                base_rgba = original_pil.convert("RGBA")
+                Image.alpha_composite(base_rgba, overlay_img).save(out_overlay)
 
         print("\nBatch processing complete.")
         return 0
