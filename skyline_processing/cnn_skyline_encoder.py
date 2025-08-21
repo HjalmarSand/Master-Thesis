@@ -13,7 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import constants
-from AI.finetune_placer import EmbeddingNet
+from AI.fine_tune_encoder import EmbeddingNet
 
 
 class CnnEncoder:

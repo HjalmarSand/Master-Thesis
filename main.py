@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -11,6 +12,8 @@ import cv2
 import laspy
 import matplotlib
 from matplotlib import pyplot as plt
+
+from DEM import DEM_skyline
 
 matplotlib.use("TkAgg")
 import zipfile
@@ -24,17 +27,19 @@ from tqdm import tqdm
 
 import constants
 from AI import evaluate_model, roll_angle_estimator
-from AI.finetune_placer import run_finetuning_stage
+from AI.fine_tune_encoder import run_finetuning_stage_pk
 from AI.plotting import create_cross_match_plot
 from AI.roll_angle_estimator import (
     visualize_model_features,
 )
 from DEM.DEM_skyline import (
+    calculate_skyline_similarity,
     create_and_save_grid,
     create_lidar_chunks,
     create_simplified_chunks,
     generate_skyline_mask_array,
     process_viewpoint_against_chunks,
+    visualize_comparison,
 )
 from image_processing import split_stacked_images
 from image_processing.create_panoramas import (
@@ -101,6 +106,25 @@ def get_undistortion_parameters(dataset_dir: Path) -> dict:
             "roll_cam1": 5.93,
             "roll_cam2": -6.48,
         }
+
+
+def get_dem_db_root_for_dataset(dataset_name: str) -> Path:
+    """
+    Resolve the DEM DB root for a dataset. Example: dataset1 -> databases/dem_dataset1
+    """
+    project_root = Path(__file__).resolve().parent
+    dirname = constants.DEM_DB_DIRNAME_PATTERN.format(dataset=dataset_name)
+    return project_root / "databases" / dirname
+
+
+def get_lidar_source_dir_for_dataset(dataset_name: str) -> Path:
+    """
+    Resolve the raw LiDAR source directory for a dataset.
+    Example: dataset1 -> DSM_Data/cleaned_laser1
+    """
+    project_root = Path(__file__).resolve().parent
+    laser_folder = dataset_name.replace("dataset", "cleaned_laser")
+    return project_root / "DSM_Data" / laser_folder
 
 
 def run_image_splitting():
@@ -182,13 +206,19 @@ def run_fisheye_undistortion():
         print(f"\nProcessing dataset: {selected_dir.name}")
 
         predicted_rolls_cam1_csv = selected_dir / "predicted_roll_angles_cam1.csv"
+        predicted_rolls_cam2_csv = selected_dir / "predicted_roll_angles_cam2.csv"
+
         if not predicted_rolls_cam1_csv.exists():
             print(
-                f"Warning: Predicted rolls CSV not found at '{predicted_rolls_cam1_csv}'."
+                f"Warning: CAM1 predicted rolls CSV not found at '{predicted_rolls_cam1_csv}'."
             )
-            print("         Proceeding without AI roll correction.")
-            # Set to None so the undistorter knows not to use it
             predicted_rolls_cam1_csv = None
+
+        if not predicted_rolls_cam2_csv.exists():
+            print(
+                f"Warning: CAM2 predicted rolls CSV not found at '{predicted_rolls_cam2_csv}'."
+            )
+            predicted_rolls_cam2_csv = None
 
         # Initialize the undistorter
         undistorter = FisheyeUndistorter(csv_path=constants.DISTORTION_PARAMS_CSV)
@@ -228,7 +258,6 @@ def run_fisheye_undistortion():
             base_roll_degrees=params["roll_cam1"],
             horizon_bend_correction=params["horizon_bend_cam1"],
             predicted_rolls_csv=predicted_rolls_cam1_csv,  # Pass the CSV
-            invert_rolls=False,  # Do NOT invert for cam1
         )
 
         # Process Cam2
@@ -244,9 +273,7 @@ def run_fisheye_undistortion():
             vertical_angle_offset_degrees=pitch_adjustment_angle,
             base_roll_degrees=params["roll_cam2"],
             horizon_bend_correction=params["horizon_bend_cam2"],
-            predicted_rolls_csv=predicted_rolls_cam1_csv,  # Pass the SAME CSV
-            invert_rolls=True,  # Invert the angles for cam2
-            cam2_additional_static_roll_degrees=-0.5,
+            predicted_rolls_csv=predicted_rolls_cam2_csv,
         )
 
         print(
@@ -414,7 +441,7 @@ def run_panorama_stitching():
         cam2_right_dir = selected_dir / "undistorted_cam2_right"
         output_panorama_dir = selected_dir
 
-        if selected_dir == "dataset1":
+        if selected_dir.name == "dataset1":
             manual_rotation_offset_deg = 32
         else:
             manual_rotation_offset_deg = 36
@@ -496,7 +523,13 @@ def run_skyline_segmentation():
 
         print(f"\nSegmenting skylines for selected dataset: {selected_dir.name}")
 
-        segmenter = SemanticSegmenter()
+        # segmenter = SemanticSegmenter() # Not fine tuned
+        segmenter = SemanticSegmenter(
+            model_name_or_path=str(
+                Path(constants.PROJECT_ROOT)
+                / "AI/models/segformer-b5-sky-finetuned-multi-dataset"
+            )
+        )
         if segmenter.model is None:
             print("Could not initialize SemanticSegmenter model.")
             return False
@@ -529,19 +562,32 @@ def run_skyline_segmentation():
 
 
 def run_prepare_lidar_assets():
-    """
-    Stage 10: Chunks raw LiDAR files and creates simplified versions for efficient access.
-    This is a one-time setup step that prepares the data for all subsequent DEM stages.
-    """
     print_stage_header(
-        "10. PREPARE LIDAR ASSETS", "Chunking and simplifying raw LiDAR data"
+        10, "PREPARE LIDAR ASSETS", "Chunking and simplifying raw LiDAR data"
     )
     try:
         project_root = Path(__file__).resolve().parent
-        db_dir = project_root / "databases" / "dem_database"
+
+        # Choose dataset
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        available_datasets = sorted(
+            [d for d in datasets_root_dir.iterdir() if d.is_dir()]
+        )
+        print("\nChoose which dataset/area this DEM DB will cover:")
+        for i, d in enumerate(available_datasets):
+            print(f"  [{i}]: {d.name}")
+        selected_dir = available_datasets[int(input("Enter number: "))]
+        dataset_name = selected_dir.name
+
+        # Per-dataset DEM DB
+        db_dir = get_dem_db_root_for_dataset(dataset_name)
         db_dir.mkdir(parents=True, exist_ok=True)
 
-        lidar_source_dir = Path(constants.LIDAR_DATA_DIR)
+        # Per-dataset LiDAR source
+        lidar_source_dir = get_lidar_source_dir_for_dataset(dataset_name)
+        if not lidar_source_dir.exists():
+            raise FileNotFoundError(f"LiDAR source dir not found: {lidar_source_dir}")
+
         raw_chunk_dir = db_dir / "lidar_chunks"
         simplified_chunk_dir = db_dir / "simplified_chunks"
         pipeline_template_path = project_root / "DEM" / "simplify_nature.json"
@@ -552,7 +598,7 @@ def run_prepare_lidar_assets():
             source_dir=lidar_source_dir,
             chunk_dir=raw_chunk_dir,
             manifest_path=db_dir / "raw_chunk_manifest.json",
-            chunk_tile_size=250,
+            chunk_tile_size=750,
         )
 
         print_separator("PART B: Filtering and Simplifying Chunks")
@@ -566,7 +612,6 @@ def run_prepare_lidar_assets():
         if simplified_manifest_path.exists():
             print("Simplified chunk manifest already exists. Skipping generation.")
         else:
-            print(f"Generating manifest for chunks in {simplified_chunk_dir}...")
             simplified_manifest = {}
             simplified_files = list(simplified_chunk_dir.glob("*.laz"))
             if not simplified_files:
@@ -575,18 +620,26 @@ def run_prepare_lidar_assets():
             for chunk_path in tqdm(
                 simplified_files, desc="Manifesting Simplified Chunks"
             ):
-                with laspy.open(chunk_path) as f:
-                    header = f.header
-                    bounds = {
-                        "min_x": header.x_min,
-                        "max_x": header.x_max,
-                        "min_y": header.y_min,
-                        "max_y": header.y_max,
-                    }
+                try:
+                    with laspy.open(chunk_path) as f:
+                        hdr = f.header
+                        pts = f.read()
+                        # Convert LAS integer coords to absolute real coords
+                        xs = pts.X * hdr.scales[0] + hdr.offsets[0]
+                        ys = pts.Y * hdr.scales[1] + hdr.offsets[1]
+                        min_x, max_x = float(xs.min()), float(xs.max())
+                        min_y, max_y = float(ys.min()), float(ys.max())
                     simplified_manifest[chunk_path.stem] = {
                         "path": str(chunk_path),
-                        "bounds": bounds,
+                        "bounds": {
+                            "min_x": min_x,
+                            "max_x": max_x,
+                            "min_y": min_y,
+                            "max_y": max_y,
+                        },
                     }
+                except Exception as e:
+                    print(f"Warning: Could not read coords for {chunk_path.name}: {e}")
             with open(simplified_manifest_path, "w") as f:
                 json.dump(simplified_manifest, f, indent=2)
             print(f"Simplified manifest saved to: {simplified_manifest_path}")
@@ -606,8 +659,10 @@ def run_generate_paired_dem_skylines():
     GPS file using the efficient chunk-based method. It then calculates the yaw offset
     by comparing each DEM to its real panorama counterpart and saves the results.
     """
+
     print_stage_header(
-        "11. GENERATE PAIRED DEM SKYLINES & YAW OFFSETS",
+        11,
+        "GENERATE PAIRED DEM SKYLINES & YAW OFFSETS",
         "Creating DEM counterparts and calculating yaw.",
     )
     try:
@@ -624,80 +679,169 @@ def run_generate_paired_dem_skylines():
             print("No datasets with 'gps_interpolated_with_orientation.csv' found.")
             return False
 
-        selected_dir = None
+        # choose dataset
         while True:
             print("\nPlease select a dataset to process:")
             for i, dir_path in enumerate(dataset_dirs):
                 print(f"  [{i}]: {dir_path.name}")
-            choice_str = input("Enter the number of the dataset: ")
             try:
-                choice_idx = int(choice_str)
+                choice_idx = int(input("Enter the number of the dataset: "))
                 if 0 <= choice_idx < len(dataset_dirs):
                     selected_dir = dataset_dirs[choice_idx]
                     break
-                else:
-                    print("Invalid input.")
             except ValueError:
-                print("Invalid input.")
+                pass
+            print("Invalid choice.")
 
-        project_root = Path(__file__).resolve().parent
-        manifest_path = (
-            project_root
-            / "databases"
-            / "dem_database"
-            / "simplified_chunk_manifest.json"
-        )
+        dataset_name = selected_dir.name
+        dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
+        manifest_path = dem_db_dir / "simplified_chunk_manifest.json"
         if not manifest_path.exists():
             print(
-                "ERROR: Simplified chunk manifest not found. Please run Stage 1 first."
+                f"ERROR: No manifest at {manifest_path}. Run Stage 10 for this dataset/area first."
             )
             return False
 
+        # Load manifest + diagnostics
+        print(f"Manifest path: {manifest_path}")
         with open(manifest_path, "r") as f:
             chunk_manifest = json.load(f)
+        print(f"Chunks in manifest: {len(chunk_manifest)}")
 
+        # Build R-tree
         print("Building R-tree index for simplified chunks...")
         p = index.Property(dimension=2)
         idx = index.Index(properties=p)
         chunk_paths_map = {}
+        # bounds diagnostics
+        bx, by = [], []
         for i, (stem, data) in enumerate(chunk_manifest.items()):
             b = data["bounds"]
             idx.insert(i, (b["min_x"], b["min_y"], b["max_x"], b["max_y"]))
             chunk_paths_map[i] = Path(data["path"])
+            bx.extend([b["min_x"], b["max_x"]])
+            by.extend([b["min_y"], b["max_y"]])
+        if bx and by:
+            print(f"Chunk X range: {min(bx):.3f} .. {max(bx):.3f}")
+            print(f"Chunk Y range: {min(by):.3f} .. {max(by):.3f}")
 
+        # Load GPS
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
         gps_df = pd.read_csv(gps_csv_path)
+        print(f"GPS rows: {len(gps_df)}")
+        if len(gps_df) == 0:
+            print("No GPS rows to process.")
+            return False
+        print(
+            f"GPS easting range:  {gps_df['easting'].min():.3f} .. {gps_df['easting'].max():.3f}"
+        )
+        print(
+            f"GPS northing range: {gps_df['northing'].min():.3f} .. {gps_df['northing'].max():.3f}"
+        )
+        print(f"SEARCH_RADIUS = {constants.SEARCH_RADIUS}")
 
+        # Output dir
         dem_output_dir = selected_dir / "dem_skylines_paired"
         dem_output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"DEM paired output dir: {dem_output_dir}")
+        print(f"Existing paired files: {len(list(dem_output_dir.glob('*.npy')))}")
 
-        tasks = []
+        # FORCE override (skip 'exists' checks if True)
+        force = bool(int(os.environ.get("STAGE11_FORCE", "0"))) or bool(
+            getattr(constants, "STAGE11_FORCE", False)
+        )
+        if force:
+            print("FORCE mode: existing paired skylines will be regenerated.")
+
+        # Quick probe of first 5 GPS points for intersections
+        probe = 0
         for row in gps_df.itertuples():
-            image_number = Path(row.filename).stem
-            if (dem_output_dir / f"{image_number}.npy").exists():
-                continue
+            e, n = float(row.easting), float(row.northing)
+            r = constants.SEARCH_RADIUS
+            sb = (e - r, n - r, e + r, n + r)
+            ids = list(idx.intersection(sb))
+            print(f"[PROBE] e={e:.1f} n={n:.1f} -> {len(ids)} intersecting chunks")
+            probe += 1
+            if probe >= 5:
+                break
 
-            easting, northing = row.easting, row.northing
-            viewpoint_coords = (easting, northing, 1.5)
-            point_id = f"paired_{image_number}"
+        # TASK BUILD
+        def build_tasks(search_radius: float) -> list[tuple]:
+            hits = misses = 0
+            tasks_local: list[tuple] = []
+            for row in gps_df.itertuples():
+                image_number = Path(row.filename).stem
+                out_path = dem_output_dir / f"{image_number}.npy"
+                if (not force) and out_path.exists():
+                    continue
 
-            search_radius = constants.SEARCH_RADIUS
-            search_bounds = (
-                easting - search_radius,
-                northing - search_radius,
-                easting + search_radius,
-                northing + search_radius,
-            )
-            relevant_indices = list(idx.intersection(search_bounds))
-            if relevant_indices:
-                relevant_paths = [chunk_paths_map[i] for i in relevant_indices]
-                tasks.append((point_id, viewpoint_coords, relevant_paths))
-
-        if tasks:
+                easting, northing = float(row.easting), float(row.northing)
+                search_bounds = (
+                    easting - search_radius,
+                    northing - search_radius,
+                    easting + search_radius,
+                    northing + search_radius,
+                )
+                relevant_indices = list(idx.intersection(search_bounds))
+                if relevant_indices:
+                    hits += 1
+                    if hits <= 3:
+                        print(
+                            f"[HIT] paired_{image_number}: {len(relevant_indices)} chunks"
+                        )
+                    relevant_paths = [chunk_paths_map[i] for i in relevant_indices]
+                    tasks_local.append(
+                        (
+                            f"paired_{image_number}",
+                            (easting, northing, 1.5),
+                            relevant_paths,
+                        )
+                    )
+                else:
+                    misses += 1
+                    if misses <= 3:
+                        print(
+                            f"[MISS] paired_{image_number}: 0 chunks within {search_radius} m"
+                        )
             print(
-                f"Generating {len(tasks)} new DEM skylines for {selected_dir.name}..."
+                f"Task build summary (radius={search_radius}): hits={hits}, misses={misses}, tasks={len(tasks_local)}"
             )
+            return tasks_local
+
+        tasks = build_tasks(constants.SEARCH_RADIUS)
+
+        # Auto-widen (one retry) if no tasks
+        if len(tasks) == 0:
+            big_radius = max(constants.SEARCH_RADIUS * 2, 5000.0)
+            print(
+                f"No tasks with SEARCH_RADIUS={constants.SEARCH_RADIUS}. Retrying once with {big_radius} m..."
+            )
+            tasks = build_tasks(big_radius)
+
+        # Single-point DEBUG attempt if still no tasks
+        if len(tasks) == 0:
+            r0 = gps_df.iloc[0]
+            e0, n0 = float(r0.easting), float(r0.northing)
+            r = max(constants.SEARCH_RADIUS, 5000.0)
+            sb = (e0 - r, n0 - r, e0 + r, n0 + r)
+            ids = list(idx.intersection(sb))
+            print(f"[SINGLE TEST] chunks near first point (r={r}): {len(ids)}")
+            if ids:
+                pid = "paired_DEBUG"
+                vp = (e0, n0, 1.5)
+                paths = [chunk_paths_map[i] for i in ids]
+                pid, sky = process_viewpoint_against_chunks((pid, vp, paths))
+                if sky is not None:
+                    np.save(dem_output_dir / "DEBUG.npy", sky)
+                    print("[SINGLE TEST] Wrote DEBUG.npy")
+                else:
+                    print("[SINGLE TEST] Worker returned None (filtered out / empty)")
+
+        # GENERATE DEM SKYLINES
+        if tasks:
+            print(f"Generating {len(tasks)} DEM skylines for {selected_dir.name}...")
             num_processes = max(1, cpu_count() - 2)
+            saved = 0
             with Pool(processes=num_processes, maxtasksperchild=1) as pool:
                 for result in tqdm(
                     pool.imap_unordered(process_viewpoint_against_chunks, tasks),
@@ -708,15 +852,34 @@ def run_generate_paired_dem_skylines():
                         point_id, final_skyline = result
                         image_number = point_id.split("_")[1]
                         np.save(dem_output_dir / f"{image_number}.npy", final_skyline)
+                        saved += 1
+            print(f"Saved {saved} paired DEM skylines to {dem_output_dir}")
         else:
-            print("All DEM skylines are already generated.")
+            print("All DEM skylines are already generated (or no intersections found).")
 
+        # YAW OFFSET CALC
         print("\nCalculating yaw offsets by comparing DEMs to real panoramas...")
         offset_results = []
-        real_mask_dir = selected_dir / "binary_panorama"  # Use the unaligned panoramas
+
+        real_mask_dir = selected_dir / "binary_panorama"  # use unaligned panoramas
+        dem_output_dir = selected_dir / "dem_skylines_paired"
+
+        # Existing offsets (append-only unless FORCE)
+        offsets_save_path = selected_dir / "yaw_offsets.csv"
+        existing_offsets = set()
+        if offsets_save_path.exists() and not force:
+            try:
+                ex_df = pd.read_csv(offsets_save_path)
+                existing_offsets = set(ex_df["filename"].tolist())
+                print(f"Existing yaw offsets: {len(existing_offsets)}")
+            except Exception:
+                pass
 
         for row in tqdm(gps_df.itertuples(), total=len(gps_df), desc="Calculating Yaw"):
             original_filename = row.filename
+            if (not force) and (original_filename in existing_offsets):
+                continue
+
             image_number = Path(original_filename).stem
 
             dem_skyline_path = dem_output_dir / f"{image_number}.npy"
@@ -725,7 +888,7 @@ def run_generate_paired_dem_skylines():
             if not dem_skyline_path.exists() or not real_mask_path.exists():
                 continue
 
-            # Load real and simulated data
+            # Load real DEM/real masks
             real_mask = np.array(Image.open(real_mask_path).convert("L"))
             dem_elevations = np.load(dem_skyline_path)
 
@@ -741,14 +904,37 @@ def run_generate_paired_dem_skylines():
 
             # Calculate yaw offset
             yaw_offset = skyline_matcher.find_yaw_offset(dem_mask, real_mask)
+
+            # Align real mask by the found yaw (positive yaw = roll right)
+            width = real_mask.shape[1]
+            pixel_shift = int(round((yaw_offset / 360.0) * width))
+            aligned_real_mask = np.roll(real_mask, shift=pixel_shift, axis=1)
+
+            # IoU after alignment
+            iou_aligned = DEM_skyline.calculate_skyline_similarity(
+                dem_mask, aligned_real_mask
+            )
+
             offset_results.append(
-                {"filename": original_filename, "yaw_offset_deg": yaw_offset}
+                {
+                    "filename": original_filename,
+                    "yaw_offset_deg": float(yaw_offset),
+                    "iou": float(iou_aligned),
+                }
             )
 
         if offset_results:
             offsets_df = pd.DataFrame(offset_results)
-            offsets_save_path = selected_dir / "yaw_offsets.csv"
-            offsets_df.to_csv(offsets_save_path, index=False, float_format="%.4f")
+            if offsets_save_path.exists() and not force:
+                old = pd.read_csv(offsets_save_path)
+                # if old file lacks 'iou', create it so concat doesn't complain
+                if "iou" not in old.columns:
+                    old["iou"] = np.nan
+                merged = pd.concat([old, offsets_df], ignore_index=True)
+                merged.drop_duplicates(subset=["filename"], keep="last", inplace=True)
+                merged.to_csv(offsets_save_path, index=False, float_format="%.4f")
+            else:
+                offsets_df.to_csv(offsets_save_path, index=False, float_format="%.4f")
             print(f"Yaw offsets saved to: {offsets_save_path}")
         else:
             print("No new yaw offsets were calculated.")
@@ -781,7 +967,7 @@ def run_panorama_alignment():
         )
         if not dataset_dirs:
             print(
-                "No datasets with a 'yaw_offsets.csv' file found. Please run Stage 14 first."
+                "No datasets with a 'yaw_offsets.csv' file found. Please run Stage 11 first."
             )
             return False
 
@@ -838,10 +1024,153 @@ def run_panorama_alignment():
         return False
 
 
+def run_paired_visualization():
+    """
+    Stage 13: Compare a real panorama (aligned) to the EXACT paired DEM skyline
+    generated in Stage 11 (dem_skylines_paired/<image_number>.npy).
+    Saves a 3-panel figure: Original (unaligned) → DEM (paired) → Real (aligned).
+    """
+    print_stage_header(
+        13,
+        "PAIRED DEM VISUALIZATION",
+        "Comparing a real panorama to its EXACT paired DEM skyline.",
+    )
+    try:
+        project_root = Path(__file__).parent
+
+        # 1) Select dataset that has Stage 11 outputs
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        dataset_dirs = sorted(
+            [
+                d
+                for d in datasets_root_dir.iterdir()
+                if d.is_dir()
+                and (d / "gps_interpolated_with_orientation.csv").is_file()
+                and (d / "dem_skylines_paired").is_dir()
+                and (d / "yaw_offsets.csv").is_file()
+            ]
+        )
+        if not dataset_dirs:
+            print("No datasets with paired DEM skylines found. Run Stage 11 first.")
+            return False
+
+        selected_dir = None
+        while True:
+            print("\nSelect a dataset for paired visualization:")
+            for i, dir_path in enumerate(dataset_dirs):
+                print(f"  [{i}]: {dir_path.name}")
+            choice = input("Enter number: ")
+            try:
+                idx = int(choice)
+                if 0 <= idx < len(dataset_dirs):
+                    selected_dir = dataset_dirs[idx]
+                    break
+            except ValueError:
+                pass
+            print("Invalid choice.")
+
+        dataset_name = selected_dir.name
+        gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
+        yaw_csv_path = selected_dir / "yaw_offsets.csv"
+        paired_dir = selected_dir / "dem_skylines_paired"
+        real_aligned = selected_dir / "binary_panorama_aligned"
+        real_unaligned = selected_dir / "binary_panorama"
+
+        # 2) Let user pick an image by its 'n' or filename from GPS CSV
+        gps_df = pd.read_csv(gps_csv_path)
+        print(
+            "\nEnter either an exact filename (e.g. '0123.jpg') or a value from column 'n'."
+        )
+        user_key = input("Filename or n: ").strip()
+
+        row = None
+        if user_key.endswith(".jpg") or user_key.endswith(".png"):
+            row = gps_df[gps_df["filename"] == user_key]
+        else:
+            try:
+                n_val = int(user_key)
+                row = gps_df[gps_df["n"] == n_val]
+            except ValueError:
+                pass
+
+        if row is None or row.empty:
+            print("Could not find a matching row in GPS CSV.")
+            return False
+
+        # 3) Resolve image number and paths
+        original_filename = row["filename"].iloc[0]
+        image_number = Path(original_filename).stem  # '0123' from '0123.jpg'
+
+        dem_vec_path = paired_dir / f"{image_number}.npy"
+        real_aligned_path = real_aligned / f"binary_panorama_{image_number}.png"
+        real_unaligned_path = real_unaligned / f"binary_panorama_{image_number}.png"
+
+        if not dem_vec_path.exists():
+            print(f"ERROR: Paired DEM skyline not found: {dem_vec_path}")
+            return False
+        if not real_aligned_path.exists():
+            print(f"ERROR: Aligned real panorama not found: {real_aligned_path}")
+            print("Run Stage 12 to create 'binary_panorama_aligned/'.")
+            return False
+        if not real_unaligned_path.exists():
+            print(f"WARNING: Unaligned panorama not found: {real_unaligned_path}")
+            print("The top panel will still render using the aligned image duplicated.")
+
+        # 4) Load data
+        dem_elevations = np.load(dem_vec_path)  # vector from Stage 11
+        num_bins = len(dem_elevations)
+        angles = np.linspace(0, 360, num_bins, endpoint=False)
+        dem_mask = generate_skyline_mask_array(
+            angles,
+            dem_elevations,
+            constants.PANORAMA_IMG_WIDTH,
+            constants.PANORAMA_IMG_HEIGHT,
+        )
+
+        aligned_real_mask = np.array(Image.open(real_aligned_path).convert("L"))
+        if real_unaligned_path.exists():
+            original_real_mask = np.array(Image.open(real_unaligned_path).convert("L"))
+        else:
+            original_real_mask = aligned_real_mask  # fallback
+
+        # 5) Get yaw for title context (optional)
+        yaw_df = pd.read_csv(yaw_csv_path)
+        yaw_lookup = {r.filename: r.yaw_offset_deg for r in yaw_df.itertuples()}
+        yaw_offset = float(yaw_lookup.get(f"{image_number}.jpg", 0.0))
+
+        # 6) IoU against aligned mask
+        similarity_score = calculate_skyline_similarity(dem_mask, aligned_real_mask)
+
+        # 7) Save the 3-panel plot
+        out_dir = project_root / "output_plots" / f"paired_visualization_{dataset_name}"
+        out_path = out_dir / f"{image_number}_paired_comparison.png"
+        visualize_comparison(
+            original_real_mask=original_real_mask,
+            dem_mask=dem_mask,
+            aligned_real_mask=aligned_real_mask,
+            point_id=f"paired_{image_number}",
+            real_image_name=f"binary_panorama_{image_number}.png",
+            similarity_score=similarity_score,
+            yaw_offset=yaw_offset,
+            save_path=out_path,
+        )
+
+        print(f"\nSaved paired comparison to: {out_path}")
+        return True
+
+    except Exception as e:
+        print(f"An error occurred during paired visualization: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
 # ! Warning: This method will take an enormous amount of time to run. If we want to have a finer grid than 25 meters, a good method now would be to shift the start and end point by 12,5 meters, and then run another 25 meter grid calculation.
 
 
 # ! Important though! if we do the above, we need to make sure that we dont overwrite the old database, but that we instead concatenate to it!
+# NOTE: This code runs well on my linux computer, but did not work as intended on a windows pc. I will not debug. Install linux
 def run_lidar_skyline_generation():
     """
     Stage 20: Generates a grid-based skyline database using the prepared LiDAR assets from Stage 10.
@@ -852,17 +1181,28 @@ def run_lidar_skyline_generation():
         "Using prepared assets to generate skylines on a grid.",
     )
     try:
-        # Configuration
-        MASK_BATCH_SIZE = 500
-        project_root = Path(__file__).resolve().parent
-        db_dir = project_root / "databases" / "dem_database"
+        # choose which dataset's DEM DB we are building in
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        available_datasets = sorted(
+            [d for d in datasets_root_dir.iterdir() if d.is_dir()]
+        )
+        print("\nChoose a dataset whose area this grid DB should cover:")
+        for i, d in enumerate(available_datasets):
+            print(f"  [{i}]: {d.name}")
+        dataset_name = available_datasets[int(input("Enter number: "))].name
 
+        # paths become dataset-scoped
+        db_dir = get_dem_db_root_for_dataset(dataset_name)
         simplified_manifest_path = db_dir / "simplified_chunk_manifest.json"
         complete_skylines_dir = db_dir / "complete_skylines"
         mask_batches_dir = db_dir / "mask_batches"
         final_masks_path = db_dir / "skyline_masks.npz"
+        complete_skylines_dir.mkdir(parents=True, exist_ok=True)
+        mask_batches_dir.mkdir(parents=True, exist_ok=True)
 
-        # PART 1: Load Prepared Assets (from Stage 10)
+        MASK_BATCH_SIZE = getattr(constants, "DEM_MASK_BATCH_SIZE", 500)
+
+        # PART 1: Load Prepared Assets
         print_separator("PART 1: Loading Prepared LiDAR Assets")
         if not simplified_manifest_path.exists():
             print(
@@ -885,11 +1225,25 @@ def run_lidar_skyline_generation():
 
         # PART 2: Generate Complete Skylines
         print_separator("PART 2: Generating Grid-Based Skylines")
-        grid_df = create_and_save_grid(
-            start_coords=(611597.725, 6458055.924),
-            end_coords=(614547.264, 6463806.450),
-            spacing_meters=5.0,
+
+        # auto-bounds from this dataset's GPS with padding
+        gps_csv = (
+            Path(constants.IMAGES_DIR)
+            / dataset_name
+            / "gps_interpolated_with_orientation.csv"
         )
+        gdf = pd.read_csv(gps_csv)
+        pad = 5.0
+        minx, maxx = gdf["easting"].min() - pad, gdf["easting"].max() + pad
+        miny, maxy = gdf["northing"].min() - pad, gdf["northing"].max() + pad
+        grid_df = create_and_save_grid((minx, miny), (maxx, maxy), spacing_meters=5.0)
+
+        # grid_df = create_and_save_grid(
+        #    start_coords=(611868.325, 6452354.815),
+        #    end_coords=(614331.646, 6457581.288),
+        #    spacing_meters=5.0,
+        # )
+
         all_coords = list(zip(grid_df["easting"], grid_df["northing"]))
 
         def task_generator():
@@ -897,7 +1251,6 @@ def run_lidar_skyline_generation():
             already_processed_ids = {
                 p.stem for p in complete_skylines_dir.glob("*.npz")
             }
-
             for vp_x, vp_y in all_coords:
                 point_id = f"dem_vp_{vp_x:.0f}_{vp_y:.0f}"
                 if point_id in already_processed_ids:
@@ -941,7 +1294,6 @@ def run_lidar_skyline_generation():
         print_separator("PART B: Generating Mask Batches")
 
         skyline_files = sorted(list(complete_skylines_dir.glob("*.npz")))
-
         if not skyline_files:
             print("No complete skylines found to process into masks.")
         else:
@@ -963,17 +1315,14 @@ def run_lidar_skyline_generation():
                     point_id = skyline_file.stem
                     with np.load(skyline_file) as data:
                         elevations = data["skyline"]
-
                     num_bins = len(elevations)
                     angles = np.linspace(0, 360, num_bins, endpoint=False)
-                    # This function is already imported from DEM_skyline.py
                     batch_masks[point_id] = generate_skyline_mask_array(
                         angles,
                         elevations,
                         constants.PANORAMA_IMG_WIDTH,
                         constants.PANORAMA_IMG_HEIGHT,
                     )
-
                 if batch_masks:
                     np.savez_compressed(mask_batch_file, **batch_masks)
 
@@ -984,9 +1333,6 @@ def run_lidar_skyline_generation():
             print("No mask batches found to merge.")
             return True
 
-        print(
-            f"Merging {len(mask_batch_files)} mask batch files into '{final_masks_path.name}'..."
-        )
         with zipfile.ZipFile(
             final_masks_path, "w", compression=zipfile.ZIP_DEFLATED
         ) as zf_out:
@@ -1173,65 +1519,51 @@ def run_dem_skyline_encoding():
         "DEM SKYLINE ENCODING",
         "Generates fingerprints from the DEM database in a streaming fashion.",
     )
-
     try:
-        project_root = Path(__file__).parent
-        db_root_dir = project_root / "databases"
-        mask_db_path = db_root_dir / "dem_database" / "skyline_masks.npz"
+        # pick dataset
+        datasets_root_dir = Path(constants.IMAGES_DIR)
+        available = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir()])
+        print("\nChoose dataset whose DEM DB to encode:")
+        for i, d in enumerate(available):
+            print(f"  [{i}]: {d.name}")
+        dataset_name = available[int(input("Enter number: "))].name
 
+        dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
+        mask_db_path = dem_db_dir / "skyline_masks.npz"
         if not mask_db_path.is_file():
             print(f" DEM skyline mask database not found at '{mask_db_path}'.")
-            print("   Please run Stage 14 first.")
+            print("   Please run Stage 20 first.")
             return False
 
-        print(f"Opening DEM skyline database from {mask_db_path}...")
-
-        # Use lazy-loading to open the database without loading it all into RAM
         with np.load(mask_db_path) as skyline_mask_data:
-            print(
-                f"Found {len(skyline_mask_data.files)} simulated skylines to process."
-            )
-
-            dataset_db_dir = db_root_dir / "dem_database"
-
-            # Fourier encoding
+            dataset_db_dir = dem_db_dir
             for strategy in ["global", "windowed"]:
-                # Pass the lazy-loaded data object to the new helper function
                 fourier_fps = (
                     fourier_skyline_encoder.create_fingerprints_from_lazy_loader(
                         skyline_mask_data, strategy=strategy
                     )
                 )
                 if fourier_fps:
-                    output_path = (
+                    out = (
                         dataset_db_dir
                         / f"fourier_{strategy}_fingerprints"
                         / "fingerprints.npz"
                     )
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    np.savez_compressed(output_path, **fourier_fps)
-                    print(
-                        f"Saved DEM Fourier ({strategy}) fingerprints to {output_path}"
-                    )
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(out, **fourier_fps)
 
-            # CNN encoding
             cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_lazy_loader(
-                skyline_mask_data,
-                pool_target=constants.POOL_TARGET,  # Using a 2x2 grid for spatial awareness
+                skyline_mask_data, pool_target=constants.POOL_TARGET
             )
         if cnn_fps:
-            output_path = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(output_path, **cnn_fps)
-            print(f"Saved DEM CNN fingerprints to {output_path}")
+            out = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(out, **cnn_fps)
 
         print("\nDEM skyline encoding complete.")
         return True
-
     except Exception as e:
         print(f"An error occurred during DEM encoding: {e}")
-        import traceback
-
         traceback.print_exc()
         return False
 
@@ -1414,22 +1746,19 @@ def run_fourier_cross_matching_analysis():
                 choice_idx = int(choice_str)
                 if 0 <= choice_idx < len(available_query_dbs):
                     selected_query_path = available_query_dbs[choice_idx]
+                    dataset_name = selected_query_path.parent.parent.name
                     break
                 else:
                     print("Invalid choice.")
             except ValueError:
                 print("Please enter a number.")
 
+        dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
         strategy = "windowed" if "windowed" in selected_query_path.name else "global"
         dem_fp_db_path = (
-            db_root_dir
-            / "dem_database"
-            / f"fourier_{strategy}_fingerprints"
-            / "fingerprints.npz"
+            dem_db_dir / f"fourier_{strategy}_fingerprints" / "fingerprints.npz"
         )
-        dem_mask_db_path = (
-            db_root_dir / "dem_database" / "skyline_masks.npz"
-        )  # Path to the DEM masks
+        dem_mask_db_path = dem_db_dir / "skyline_masks.npz"
 
         dataset_name = selected_query_path.parent.parent.name
         gps_csv_path = (
@@ -1515,16 +1844,16 @@ def run_cnn_cross_matching_analysis():
                 choice_idx = int(choice_str)
                 if 0 <= choice_idx < len(available_query_dbs):
                     selected_query_path = available_query_dbs[choice_idx]
+                    dataset_name = selected_query_path.parent.parent.name
                     break
                 else:
                     print("Invalid choice.")
             except ValueError:
                 print("Please enter a number.")
 
-        dem_fp_db_path = (
-            db_root_dir / "dem_database" / "cnn_fingerprints" / "fingerprints.npz"
-        )
-        dem_mask_db_path = db_root_dir / "dem_database" / "skyline_masks.npz"
+        dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
+        dem_fp_db_path = dem_db_dir / "cnn_fingerprints" / "fingerprints.npz"
+        dem_mask_db_path = dem_db_dir / "skyline_masks.npz"
 
         dataset_name = selected_query_path.parent.parent.name
         gps_csv_path = (
@@ -2018,11 +2347,6 @@ def run_database_visualization():
     )
     try:
         project_root = Path(__file__).parent
-        db_path = project_root / "databases" / "dem_database" / "skyline_masks.npz"
-
-        if not db_path.exists():
-            print(f"ERROR: Final database not found at '{db_path}'.")
-            return False
 
         #  1. Select the dataset interactively
         datasets_root_dir = Path(constants.IMAGES_DIR)
@@ -2048,11 +2372,19 @@ def run_database_visualization():
                 choice_idx = int(choice_str)
                 if 0 <= choice_idx < len(dataset_dirs):
                     selected_dir = dataset_dirs[choice_idx]
+                    dataset_name = selected_dir.name
                     break
                 else:
                     print("Invalid input.")
             except ValueError:
                 print("Invalid input.")
+
+        dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
+        db_path = dem_db_dir / "skyline_masks.npz"
+
+        if not db_path.exists():
+            print(f"ERROR: Final database not found at '{db_path}'.")
+            return False
 
         #  2. Select the specific data point by its 'n' value
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
@@ -2227,14 +2559,16 @@ def run_fisheye_segmentation():
         return False
 
 
+# TODO: Maybe make a harder focus mask in the center, since this is where most of the usable data comes from. Also do some more data augmentation, like cropping the image to only a rectangle in the middle to begin with, since that is where the roll usually is? We might also later when we use the predicted rolls for back and front camera make some kind of analysis of common differences between them, and if the differences are too large we can view that data point as likely flawed. Maybe throw it away of average the roll between them, or select one that is more likely according to the distributions of rolls seen in the dataset
 def run_roll_angle_training():
     """
-    Stage 51: Train a single, unified CNN model on a pre-defined list of datasets.
+    Stage 51: Train a single, unified CNN model on a combined dataset from
+    both front and back cameras for better generalization.
     """
     print_stage_header(
         51,
         "UNIFIED ROLL ANGLE ESTIMATOR TRAINING",
-        "Training one model on a combined dataset for better generalization.",
+        "Training one model on a combined dataset (front and back cameras).",
     )
     try:
         project_root = Path(__file__).parent
@@ -2245,26 +2579,39 @@ def run_roll_angle_training():
             print(f"ERROR: Annotation file not found at '{annotation_csv_path}'")
             return False
 
-        # Add the paths to all the image folders you want to train on.
-        training_folders = [
-            images_root / "dataset1" / "distorted_images_cam1",
-            images_root / "dataset2" / "distorted_images_cam1",
-            images_root / "dataset3" / "distorted_images_cam1",
-        ]
+        training_sources = {
+            # Back Camera sources map to the 'roll_back' column
+            images_root / "dataset1" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset2" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset3" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset4" / "distorted_images_cam1": "roll_back",
+            # Front Camera sources map to the 'roll_front' column
+            images_root / "dataset1" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset2" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset3" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset4" / "distorted_images_cam2": "roll_front",
+        }
 
-        # Filter out any folders that don't actually exist
-        valid_training_folders = [p for p in training_folders if p.is_dir()]
-        if not valid_training_folders:
+        # Filter out any sources where the directory doesn't actually exist
+        valid_training_sources = {
+            path: col for path, col in training_sources.items() if path.is_dir()
+        }
+
+        if not valid_training_sources:
             print("None of the specified training folders exist. Aborting.")
             return False
 
-        model_save_path = project_root / "AI" / "models" / "roll_estimator_combined.pth"
+        print("The following valid data sources will be used for training:")
+        for path, col in valid_training_sources.items():
+            print(f"- {path}  ->  '{col}'")
+
+        model_save_path = project_root / "AI" / "models" / "roll_estimator_unified.pth"
 
         exit_code = roll_angle_estimator.train_roll_estimator(
-            image_dirs=valid_training_folders,  # Pass the list of folders
+            training_sources=valid_training_sources,
             annotation_csv=annotation_csv_path,
             model_save_path=model_save_path,
-            num_epochs=120,
+            num_epochs=500,
         )
 
         return exit_code == 0
@@ -2279,60 +2626,51 @@ def run_roll_angle_training():
 
 def run_roll_model_evaluation():
     """
-    Stage 52: Evaluate the combined roll angle model on the validation set
-    from the full training data.
+    Stage 52: Perform a detailed analysis of the best model on the validation set.
     """
-    print_stage_header(52, "ROLL ANGLE MODEL EVALUATION")
+    print_stage_header(
+        52,
+        "ROLL ANGLE MODEL ANALYSIS",
+        "Generating detailed metrics and plots for the best model.",
+    )
     try:
         project_root = Path(__file__).parent
         annotation_csv_path = project_root / "AI" / "roll_annotations.csv"
         images_root = Path(constants.IMAGES_DIR)
 
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_unified_best.pth"
         if not model_path.is_file():
-            print(
-                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 51 first."
-            )
+            print(f"ERROR: Best model not found at '{model_path}'.")
             return False
 
-        # Use the SAME list of folders that the model was trained on
-        training_folders = [
-            images_root / "dataset1" / "distorted_images_cam1",
-            images_root / "dataset2" / "distorted_images_cam1",
-            images_root / "dataset3" / "distorted_images_cam1",
-        ]
+        # Use the EXACT SAME sources as in training
+        training_sources = {
+            # Back Camera sources map to the 'roll_back' column
+            images_root / "dataset1" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset2" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset3" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset4" / "distorted_images_cam1": "roll_back",
+            # Front Camera sources map to the 'roll_front' column
+            images_root / "dataset1" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset2" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset3" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset4" / "distorted_images_cam2": "roll_front",
+        }
+        valid_training_sources = {
+            path: col for path, col in training_sources.items() if path.is_dir()
+        }
 
-        valid_folders = [p for p in training_folders if p.is_dir()]
-        if not valid_folders:
-            print("None of the specified evaluation folders exist.")
-            return False
+        results_dir = project_root / "AI" / "evaluation_results"
 
-        # This must be identical to the transform used during training
-        transform = transforms.Compose(
-            [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
-            ]
-        )
-        # END OF BLOCK
-
-        plot_save_path = (
-            project_root / "AI" / "evaluation_results" / "evaluation_combined_model.png"
-        )
-
-        exit_code = evaluate_model.run_evaluation(
-            image_dirs=valid_folders,
+        exit_code = roll_angle_estimator.analyze_model_performance(
+            training_sources=valid_training_sources,
             annotation_csv=annotation_csv_path,
             model_path=model_path,
-            plot_save_path=plot_save_path,
-            transform=transform,  # <<< PASS THE TRANSFORM HERE
+            results_dir=results_dir,
         )
         return exit_code == 0
-
     except Exception as e:
-        print(f"An error occurred during model evaluation: {e}")
+        print(f"An error occurred during roll model evaluation: {e}")
         import traceback
 
         traceback.print_exc()
@@ -2341,16 +2679,17 @@ def run_roll_model_evaluation():
 
 def run_roll_angle_prediction():
     """
-    Stage 53: Use the trained model to predict roll angles for cam1 images.
+    Stage 53: Use the unified model to predict roll angles for all available
+    camera images (cam1 and cam2).
     """
     print_stage_header(
         53,
-        "PREDICT ROLL ANGLES FOR CAM1",
-        "Applying trained model to cam1 distorted fisheye images.",
+        "PREDICT ROLL ANGLES (UNIFIED MODEL)",
+        "Applying trained model to all available distorted fisheye images.",
     )
     try:
         project_root = Path(__file__).parent
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_unified_best.pth"
         if not model_path.exists():
             print(
                 f"ERROR: Best model not found at '{model_path}'. Please run Stage 51 first."
@@ -2358,34 +2697,50 @@ def run_roll_angle_prediction():
             return False
 
         datasets_root_dir = Path(constants.IMAGES_DIR)
-        dataset_dirs = sorted(
-            [
-                d
-                for d in datasets_root_dir.iterdir()
-                if d.is_dir() and (d / "distorted_images_cam1").is_dir()
-            ]
-        )
+
+        dataset_dirs = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir()])
 
         if not dataset_dirs:
-            print("No dataset folders with distorted images found.")
+            print("No dataset folders found.")
             return False
+
+        # Define the camera types to look for
+        camera_subfolders = {
+            "cam1": "distorted_images_cam1",
+            "cam2": "distorted_images_cam2",
+        }
 
         all_successful = True
         for dataset_dir in dataset_dirs:
             print(f"\nProcessing dataset: {dataset_dir.name}")
+            found_any_cam_in_dataset = False
 
-            # Predict for cam1 only
-            input_dir_cam1 = dataset_dir / "distorted_images_cam1"
-            output_csv_cam1 = dataset_dir / "predicted_roll_angles_cam1.csv"
-            if (
-                roll_angle_estimator.predict_angles_for_directory(
-                    input_dir_cam1, model_path, output_csv_cam1
+            # Loop through each potential camera type
+            for cam_name, cam_folder_name in camera_subfolders.items():
+                input_dir = dataset_dir / cam_folder_name
+
+                # Check if this specific camera folder exists
+                if input_dir.is_dir() and any(input_dir.iterdir()):
+                    found_any_cam_in_dataset = True
+                    print(f"  - Found '{cam_folder_name}'. Predicting angles...")
+
+                    output_csv = dataset_dir / f"predicted_roll_angles_{cam_name}.csv"
+
+                    if (
+                        roll_angle_estimator.predict_angles_for_directory(
+                            input_dir, model_path, output_csv
+                        )
+                        != 0
+                    ):
+                        all_successful = False
+
+            if not found_any_cam_in_dataset:
+                print(
+                    f"  - No camera subfolders with images found in {dataset_dir.name}. Skipping."
                 )
-                != 0
-            ):
-                all_successful = False
 
         return all_successful
+
     except Exception as e:
         print(f"An error occurred during roll angle prediction: {e}")
         import traceback
@@ -2480,20 +2835,18 @@ def run_feature_visualization():
         project_root = Path(__file__).parent
 
         # Path to the single combined model
-        model_path = project_root / "AI" / "models" / "roll_estimator_combined_best.pth"
+        model_path = project_root / "AI" / "models" / "roll_estimator_unified_best.pth"
         if not model_path.is_file():
             print(
-                f"ERROR: Combined model not found at '{model_path}'. Please run Stage 3 first."
+                f"ERROR: Unified model not found at '{model_path}'. Please run Stage 3 first."
             )
             return False
 
-        # CONFIGURE THE VISUALIZATION IMAGE HERE
         # Define the relative path to the image you want to visualize.
         sample_image_path = (
             project_root
-            / "images/dataset2/distorted_images_cam1/distorted_cam1_0447.jpg"
+            / "images/dataset3/distorted_images_cam2/distorted_cam2_1000.jpg"
         )
-        # END OF CONFIGURATION
 
         if not sample_image_path.is_file():
             print(f"ERROR: Sample image not found at '{sample_image_path}'.")
@@ -2526,7 +2879,6 @@ def run_megaloc_database_creation():
         "Generating MegaLoc visual feature vectors for panoramic images.",
     )
     try:
-        # --- Interactive Dataset Selection (consistent with other stages) ---
         datasets_root_dir = Path(constants.IMAGES_DIR)
         # Find datasets that have both panoramas and the required GPS file
         dataset_dirs = sorted(
@@ -2568,7 +2920,7 @@ def run_megaloc_database_creation():
 
         print(f"\nCreating MegaLoc database for dataset: {selected_dir.name}")
 
-        # --- Define Paths ---
+        # Define Paths
         dataset_name = selected_dir.name
         panorama_dir = selected_dir / "panoramas"
         gps_csv_path = selected_dir / "gps_interpolated_with_orientation.csv"
@@ -2579,14 +2931,14 @@ def run_megaloc_database_creation():
         output_db_dir.mkdir(parents=True, exist_ok=True)
         database_output_file = output_db_dir / "megaloc_pano_db.pkl"
 
-        # --- Instantiate and Run the Creator ---
+        # Instantiate and Run the Creator
         creator = MegaLocDatabaseCreator(
             gps_csv_path=str(gps_csv_path),
             database_output_file=str(database_output_file),
         )
 
         recreate_choice = input(
-            f"Database may already exist. Force recreation? (y/N): "
+            "Database may already exist. Force recreation? (y/N): "
         ).lower()
         force_recreate = recreate_choice == "y"
 
@@ -2633,7 +2985,7 @@ def run_megaloc_querying():
         project_root = Path(__file__).parent
         databases_root_dir = project_root / "databases"
 
-        # --- 1. Select the Database to Query ---
+        # 1. Select the Database to Query
         available_databases = sorted(
             list(databases_root_dir.glob("**/megaloc_pano_db.pkl"))
         )
@@ -2666,7 +3018,7 @@ def run_megaloc_querying():
         db_dataset_name = selected_db_path.parent.parent.name
         print(f"\nQuerying database for dataset: {db_dataset_name}")
 
-        # --- Helper function to infer the correct GPS path from the query path ---
+        # Helper function to infer the correct GPS path from the query path
         def infer_gps_path_from_query(query_path: Path):
             try:
                 # Find the 'images' directory in the path parts
@@ -2699,7 +3051,7 @@ def run_megaloc_querying():
                 )
                 return None
 
-        # --- 2. Select Query Mode ---
+        # 2. Select Query Mode
         print("\nSelect query mode:")
         print("  [1]: Query with a single image file")
         print("  [2]: Query with an entire folder of images")
@@ -2707,7 +3059,7 @@ def run_megaloc_querying():
         while mode_choice not in ["1", "2"]:
             mode_choice = input("Enter your choice (1 or 2): ")
 
-        # --- 3. Get Query Path and Initialize Querier ---
+        # 3. Get Query Path and Initialize Querier
         query_path = None
         if mode_choice == "1":
             while True:
@@ -2750,11 +3102,11 @@ def run_megaloc_querying():
             database_path=str(selected_db_path), gps_csv_path=str(query_gps_path)
         )
 
-        # --- 4. Execute Query and Display Results ---
+        # 4. Execute Query and Display Results
         if mode_choice == "1":
             result = querier.query_single_image(str(query_path))
             if result:
-                print("\n--- Query Result ---")
+                print("\nQuery Result")
                 print(f"  Query Image: {result['query_path']}")
                 print(f"  Best Match in DB: {result['best_match_path']}")
                 print(
@@ -2767,7 +3119,7 @@ def run_megaloc_querying():
         elif mode_choice == "2":
             stats = querier.query_folder(str(query_path))
             if stats:
-                print("\n--- Folder Query Statistics ---")
+                print("\nFolder Query Statistics")
                 print(f"  Total images in folder: {stats['total_queries']}")
                 print(f"  Successfully queried: {stats['successful_queries']}")
                 print("-" * 25)
@@ -2832,6 +3184,7 @@ def main():
             run_generate_paired_dem_skylines,
         ),
         12: ("APPLY YAW ALIGNMENT TO PANORAMAS", run_panorama_alignment),
+        13: ("Visualize Paired DEM vs Real (Exact Match)", run_paired_visualization),
         # [PART 3: FINGERPRINTING & DATABASE GENERATION]
         20: ("Generate Grid-Based DEM Skyline Database", run_lidar_skyline_generation),
         21: ("Encode REAL Aligned Panoramas (Fourier)", run_skyline_fourier_encoder),
@@ -2852,15 +3205,17 @@ def main():
         ),
         31: ("CNN Cross-Matching (Real vs. DEM Grid)", run_cnn_cross_matching_analysis),
         32: ("Visualize Closest DEM Grid Point", run_database_visualization),
-        # [PART 5: Optional AI Model Training/Evaluation]
-        50: ("Segment Fisheye Images for Roll CNN", run_fisheye_segmentation),
+        50: (
+            "Segment Fisheye Images for Roll CNN",
+            run_fisheye_segmentation,
+        ),  # Now we no longer try to roll correct on segmented images
         51: ("Train Roll Angle Estimator", run_roll_angle_training),
         52: ("Evaluate Roll Angle Model", run_roll_model_evaluation),
         53: ("Predict Roll Angles with AI Model", run_roll_angle_prediction),
         54: ("Visualize CNN Features", run_feature_visualization),
         55: (
             "Fine-tune Skyline Feature Extractor",
-            run_finetuning_stage,
+            run_finetuning_stage_pk,
         ),  # TODO! Maybe, when we try to finetune on images that barely have any islands in them, we are confusing the network. The loss would be high for them if they are almost only straight lines. It could prove useful to try to finetune the encoder on images with a lot of islands and then accept poor performance on images too far from land.
         # NOTE: We have an issue with low resolution images. This is making the segmentation very difficult. Even annotating the images ourselves is very hard because of the low resolution.
         56: ("Create MegaLoc Database", run_megaloc_database_creation),
