@@ -686,6 +686,79 @@ def haversine_matrix(lat_deg: torch.Tensor, lon_deg: torch.Tensor) -> torch.Tens
     return R * c
 
 
+def infoNCE_masked_weighted(
+    z,
+    labels,
+    c1,
+    c2,
+    coord_space,
+    tau=0.07,
+    radius_exclude=50.0,
+    iou_mat: torch.Tensor | None = None,
+    gamma: float = 0.0,
+    orig_count: int | None = None,
+    force_neg_mask: torch.Tensor | None = None,
+):
+    """
+    z: [N,D] L2-normalized embeddings (could be your z_all with flips included).
+    labels: [N] (flips must have different labels -> negatives)
+    c1,c2: [N] coords
+    """
+    z = F.normalize(z, dim=1)
+    logits = (z @ z.T) / tau  # [N,N]
+    N = logits.size(0)
+    eye = torch.eye(N, dtype=torch.bool, device=z.device)
+    logits.masked_fill_(eye, float("-inf"))  # remove self
+
+    # positives = same label (K=2 ensures exactly one positive per anchor)
+    posmask = labels.unsqueeze(0).eq(labels.unsqueeze(1)) & ~eye
+
+    # If orig_count is given, disable ANY positive pairs that involve the flips
+    # (anchors in [orig_count:]) and also positives between flips themselves.
+    if orig_count is not None:
+        N = posmask.size(0)
+        flips = torch.zeros(N, dtype=torch.bool, device=posmask.device)
+        flips[orig_count:] = True
+        # zero positives where either side is a flip
+        posmask[flips, :] = False
+        posmask[:, flips] = False
+
+    # exclude near negatives (like your r_exclude_m)
+    if coord_space == "geo":
+        d = haversine_matrix(c1, c2)
+    else:
+        coords = torch.stack([c1, c2], dim=1)
+        d = torch.cdist(coords, coords, p=2)
+    near = d < float(radius_exclude)
+
+    if force_neg_mask is None:
+        force_neg_mask = torch.zeros_like(posmask)
+
+    # allow negatives if they are far OR explicitly forced (e.g., flips)
+    allowed = posmask | (~posmask & (~near | force_neg_mask))
+
+    logits = logits.masked_fill(~allowed, float("-inf"))
+
+    # optional weighting by skyline IoU (bigger weight for low-IoU negatives)
+    if iou_mat is not None and gamma > 0:
+        # weight ONLY negatives (allowed & ~posmask)
+        w = 1.0 + gamma * (1.0 - iou_mat)  # [N,N], >=1
+        neg_allowed = allowed & (~posmask)
+        w = torch.where(neg_allowed, w, torch.ones_like(w))
+        logits = logits + torch.log(torch.clamp(w, min=1e-6))
+
+    # numerator: log-sum-exp over positives (handles multiple positives if K>2)
+    num = torch.logsumexp(
+        torch.where(posmask, logits, torch.full_like(logits, float("-inf"))), dim=1
+    )
+    # denominator: log-sum-exp over all allowed (positives + eligible negatives)
+    den = torch.logsumexp(logits, dim=1)
+
+    valid = posmask.any(dim=1)
+    loss = -(num[valid] - den[valid]).mean()
+    return loss
+
+
 def triplet_semihard_loss_cosine_coords_forced(
     emb,
     labels,
@@ -985,7 +1058,15 @@ class EmbeddingNet(nn.Module):
 
 @torch.no_grad()
 def compute_val_loss(
-    model, val_loader, coord_space, margin, r_exclude_m, device, gamma=0.2
+    model,
+    val_loader,
+    coord_space,
+    margin,
+    r_exclude_m,
+    device,
+    gamma=0.2,
+    loss_type: str = "triplet",
+    tau: float = 0.07,
 ):
     model.eval()
     losses = []
@@ -1026,18 +1107,34 @@ def compute_val_loss(
         union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
         iou_mat = inter / union
 
-        loss = triplet_semihard_loss_cosine_coords_forced(
-            z_all,
-            labels_all,
-            c1_all,
-            c2_all,
-            coord_space=coord_space,
-            margin=margin,
-            r_exclude_m=r_exclude_m,
-            force_neg_mask=force_neg_mask,
-            iou_mat=iou_mat,
-            gamma=gamma,
-        )
+        if loss_type == "triplet":
+            loss = triplet_semihard_loss_cosine_coords_forced(
+                z_all,
+                labels_all,
+                c1_all,
+                c2_all,
+                coord_space=coord_space,
+                margin=margin,
+                r_exclude_m=r_exclude_m,
+                force_neg_mask=force_neg_mask,
+                iou_mat=iou_mat,
+                gamma=gamma,
+            )
+        else:
+            loss = infoNCE_masked_weighted(
+                z_all,
+                labels_all,
+                c1_all,
+                c2_all,
+                coord_space=coord_space,
+                tau=tau,
+                radius_exclude=r_exclude_m,
+                iou_mat=iou_mat,
+                gamma=gamma,
+                orig_count=B,  # ensure flips have NO positives
+                force_neg_mask=force_neg_mask,  # flips ARE negatives
+            )
+
         losses.append(loss.item())
     return float(sum(losses) / max(1, len(losses)))
 
@@ -1050,8 +1147,10 @@ def train_placer_model_pk(
     K: int = 2,
     margin: float = 0.1,
     gamma: float = 0.4,
-    r_exclude_m: float = 50.0,
-    use_amp: bool = True,
+    use_amp=True,
+    r_exclude_m=50.0,
+    loss_type="infonce",
+    tau=0.07,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -1096,7 +1195,7 @@ def train_placer_model_pk(
         f"{model_save_path.stem}_best.pth"
     )  # finetuned_placer_ALL_best.pth
 
-    tqdm.write("Starting PxK training with geo/utm-aware semi-hard mining...")
+    tqdm.write(f"Starting PxK training | loss={loss_type} | coord={coord_space}")
     for epoch in range(num_epochs):
         if hasattr(train_loader.dataset, "set_epoch"):
             train_loader.dataset.set_epoch(epoch)
@@ -1152,18 +1251,33 @@ def train_placer_model_pk(
                     force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
                     force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
 
-                loss = triplet_semihard_loss_cosine_coords_forced(
-                    z_all,
-                    labels_all,
-                    c1_all,
-                    c2_all,
-                    coord_space=coord_space,
-                    margin=margin,
-                    r_exclude_m=r_exclude_m,
-                    force_neg_mask=force_neg_mask,
-                    iou_mat=iou_mat,
-                    gamma=gamma,  # try 0.1–0.5
-                )
+                if loss_type == "triplet":
+                    loss = triplet_semihard_loss_cosine_coords_forced(
+                        z_all,
+                        labels_all,
+                        c1_all,
+                        c2_all,
+                        coord_space=coord_space,
+                        margin=margin,
+                        r_exclude_m=r_exclude_m,
+                        force_neg_mask=force_neg_mask,
+                        iou_mat=iou_mat,
+                        gamma=gamma,
+                    )
+                elif loss_type == "infonce":
+                    loss = infoNCE_masked_weighted(
+                        z_all,
+                        labels_all,
+                        c1_all,
+                        c2_all,
+                        coord_space=coord_space,
+                        tau=tau,
+                        radius_exclude=r_exclude_m,
+                        iou_mat=iou_mat,
+                        gamma=gamma,
+                        orig_count=B,  # ensure flips have NO positives
+                        force_neg_mask=force_neg_mask,  # flips ARE negatives
+                    )
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -1195,7 +1309,15 @@ def train_placer_model_pk(
 
         r1, r5, r10 = recalls[1], recalls[5], recalls[10]
         val_loss = compute_val_loss(
-            model, val_loader, coord_space, margin, r_exclude_m, device, gamma=gamma
+            model,
+            val_loader,
+            coord_space,
+            margin,
+            r_exclude_m,
+            device,
+            gamma=gamma,
+            loss_type=loss_type,
+            tau=tau,
         )
         tqdm.write(
             f"Epoch {epoch + 1} | TrainLoss {avg_train:.4f} | ValLoss {val_loss:.4f} | "
@@ -1263,7 +1385,7 @@ def run_finetuning_stage_pk():
         train_placer_model_pk(
             dataset_dir=selected_dirs,
             model_save_path=model_save_path,
-            num_epochs=100,
+            num_epochs=400,
             P=P,
             K=K,
             margin=0.05,  # Will be base margin. If r_exclude is small, we will effectively force images that are similar to be separated by some base margin that might be too high

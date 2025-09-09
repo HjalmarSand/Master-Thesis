@@ -13,7 +13,10 @@ from PIL import Image
 from tqdm import tqdm
 
 import constants
-from AI.fine_tune_encoder import EmbeddingNet
+from AI.fine_tune_encoder import (
+    EmbeddingNet,
+    ValBinaryTransform,  # adjust import
+)
 
 
 class CnnEncoder:
@@ -35,41 +38,46 @@ class CnnEncoder:
 
         if model_path and model_path.exists():
             print(f"Loading fine-tuned model from: {model_path}")
-            # Load the architecture that matches the saved weights
             model = EmbeddingNet(embedding_dim=128).to(self.device)
             model.load_state_dict(torch.load(model_path, map_location=self.device))
-            # For inference, we only need the feature extraction part
             self.feature_extractor = model.backbone.features
+            # Use ValBinaryTransform → matches training preprocessing
+            self.transform = ValBinaryTransform(target_h=224, w_shrink=2)
+            self.uses_finetuned = True
         else:
             print("Fine-tuned model not found. Using default MobileNetV2.")
             weights = models.MobileNet_V2_Weights.DEFAULT
             model = models.mobilenet_v2(weights=weights)
             self.feature_extractor = model.features.to(self.device)
+            # Use simple resize pipeline → matches ImageNet training
+            self.transform = transforms.Compose(
+                [
+                    transforms.Resize((224, 224), antialias=True),
+                    transforms.ToTensor(),
+                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    ),
+                ]
+            )
+            self.uses_finetuned = False
 
         self.feature_extractor.eval()
         self.pool = torch.nn.functional.adaptive_avg_pool2d
 
-        self.transform = transforms.Compose(
-            [
-                # Directly resize each window to the target square
-                transforms.Resize((224, 224), antialias=True),
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
-
     @torch.no_grad()
     def _encode_pil_window(self, image_window: Image.Image) -> np.ndarray:
         """Encodes a single PIL image window into a feature vector."""
-        img_tensor = self.transform(image_window).unsqueeze(0).to(self.device)
-        features = self.feature_extractor(img_tensor)
+        if self.uses_finetuned:
+            img_t, _ = self.transform(
+                image_window
+            )  # ValBinaryTransform returns (tensor, profile)
+        else:
+            img_t = self.transform(image_window)  # Compose returns just tensor
 
+        features = self.feature_extractor(img_t.unsqueeze(0).to(self.device))
         pooled_features = self.pool(features, self.pool_target)
 
-        # Flatten the grid into a 1D vector and convert to numpy
         return pooled_features.flatten().cpu().numpy()
 
     def encode_mask_array(
@@ -106,12 +114,12 @@ class CnnEncoder:
 
 
 def create_cnn_fingerprints_from_lazy_loader(
-    lazy_loaded_data, pool_target: tuple = (2, 2)
+    lazy_loaded_data, pool_target: tuple = (2, 2), model_path: Path = None
 ) -> dict:
     """
     Processes a large, lazy-loaded .npz file (DEM database).
     """
-    encoder = CnnEncoder(pool_target=pool_target)
+    encoder = CnnEncoder(pool_target=pool_target, model_path=model_path)
     fingerprints = {}
 
     for point_id in tqdm(lazy_loaded_data.files, desc="Encoding DEM with CNN"):
@@ -124,7 +132,10 @@ def create_cnn_fingerprints_from_lazy_loader(
 
 
 def create_cnn_fingerprints_for_directory(
-    input_dir: Path, output_filepath: Path, pool_target: tuple = (2, 2)
+    input_dir: Path,
+    output_filepath: Path,
+    pool_target: tuple = (2, 2),
+    model_path: Path = None,
 ):
     """
     Processes a directory of real image panoramas.
@@ -135,7 +146,7 @@ def create_cnn_fingerprints_for_directory(
         print(f"No images found in {input_dir}")
         return 1
 
-    encoder = CnnEncoder(pool_target=pool_target)
+    encoder = CnnEncoder(pool_target=pool_target, model_path=model_path)
     fingerprints = {}
     for image_path in tqdm(image_files, desc="Encoding with CNN"):
         with Image.open(image_path).convert("L") as img:

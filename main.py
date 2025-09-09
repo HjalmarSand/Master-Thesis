@@ -17,6 +17,7 @@ from DEM import DEM_skyline
 
 matplotlib.use("TkAgg")
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -61,6 +62,87 @@ from skyline_processing import (
 from skyline_processing.segformer_segmenter import SemanticSegmenter
 from utils import orientation_path_from_gps
 from utils.utility import get_original_numbered_file_name
+
+
+def _list_dem_datasets(db_root: Path) -> list[Path]:
+    return sorted(
+        [
+            d
+            for d in db_root.iterdir()
+            if d.is_dir() and d.name.startswith("dem_dataset")
+        ]
+    )
+
+
+def _pick_dem_dataset(db_root: Path) -> Path | None:
+    available = _list_dem_datasets(db_root)
+    if not available:
+        print("No DEM datasets found in 'databases/'.")
+        return None
+    print("\nChoose DEM dataset:")
+    for i, d in enumerate(available):
+        print(f"  [{i}]: {d.name}")
+    try:
+        return available[int(input("Enter number: "))]
+    except Exception:
+        print("Invalid choice.")
+        return None
+
+
+def _encode_dem_fourier_for_dir(dataset_dir: Path) -> bool:
+    mask_db_path = dataset_dir / "skyline_masks.npz"
+    if not mask_db_path.is_file():
+        print(
+            f"  Skipping {dataset_dir.name}: no {mask_db_path.name}. Run Stage 20 first."
+        )
+        return False
+
+    with np.load(mask_db_path) as skyline_mask_data:
+        ok_all = True
+        for strategy in ["global", "windowed"]:
+            fps = fourier_skyline_encoder.create_fingerprints_from_lazy_loader(
+                skyline_mask_data, strategy=strategy
+            )
+            if fps:
+                out = (
+                    dataset_dir
+                    / f"fourier_{strategy}_fingerprints"
+                    / "fingerprints.npz"
+                )
+                out.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(out, **fps)
+                print(f"  Wrote {out.relative_to(dataset_dir)}")
+            else:
+                print(f"  No Fourier fingerprints produced for strategy={strategy}.")
+                ok_all = False
+        return ok_all
+
+
+def _encode_dem_cnn_for_dir(
+    dataset_dir: Path, model_path: Path | None, pool_target: tuple
+) -> bool:
+    mask_db_path = dataset_dir / "skyline_masks.npz"
+    if not mask_db_path.is_file():
+        print(
+            f"  Skipping {dataset_dir.name}: no {mask_db_path.name}. Run Stage 20 first."
+        )
+        return False
+
+    with np.load(mask_db_path) as skyline_mask_data:
+        cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_lazy_loader(
+            skyline_mask_data,
+            pool_target=pool_target,
+            model_path=model_path,
+        )
+    if cnn_fps:
+        out = dataset_dir / "cnn_fingerprints" / "fingerprints.npz"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(out, **cnn_fps)
+        print(f"  Wrote {out.relative_to(dataset_dir)}")
+        return True
+    else:
+        print("  No CNN fingerprints produced.")
+        return False
 
 
 def print_separator(title=""):
@@ -1509,61 +1591,72 @@ def run_cnn_encoding():
         return False
 
 
-def run_dem_skyline_encoding():
+def run_dem_fourier_encoding(process_all: bool = False):
     """
-    Stage 23: Load a DEM skyline mask database and create all fingerprint types
-    in a memory-safe way.
+    Stage 23: Encode DEM skyline masks with Fourier (global + windowed).
     """
     print_stage_header(
-        23,
-        "DEM SKYLINE ENCODING",
-        "Generates fingerprints from the DEM database in a streaming fashion.",
+        23, "DEM FOURIER ENCODING", "Fourier fingerprints for DEM databases"
     )
     try:
-        # pick dataset
-        datasets_root_dir = Path(constants.IMAGES_DIR)
-        available = sorted([d for d in datasets_root_dir.iterdir() if d.is_dir()])
-        print("\nChoose dataset whose DEM DB to encode:")
-        for i, d in enumerate(available):
-            print(f"  [{i}]: {d.name}")
-        dataset_name = available[int(input("Enter number: "))].name
+        db_root = Path("databases")
+        targets = _list_dem_datasets(db_root) if process_all else []
+        if not process_all:
+            picked = _pick_dem_dataset(db_root)
+            if picked is None:
+                return False
+            targets = [picked]
 
-        dem_db_dir = get_dem_db_root_for_dataset(dataset_name)
-        mask_db_path = dem_db_dir / "skyline_masks.npz"
-        if not mask_db_path.is_file():
-            print(f" DEM skyline mask database not found at '{mask_db_path}'.")
-            print("   Please run Stage 20 first.")
-            return False
+        any_ok = False
+        for ds in targets:
+            print(f"\nEncoding Fourier for {ds.name}...")
+            ok = _encode_dem_fourier_for_dir(ds)
+            any_ok = any_ok or ok
 
-        with np.load(mask_db_path) as skyline_mask_data:
-            dataset_db_dir = dem_db_dir
-            for strategy in ["global", "windowed"]:
-                fourier_fps = (
-                    fourier_skyline_encoder.create_fingerprints_from_lazy_loader(
-                        skyline_mask_data, strategy=strategy
-                    )
-                )
-                if fourier_fps:
-                    out = (
-                        dataset_db_dir
-                        / f"fourier_{strategy}_fingerprints"
-                        / "fingerprints.npz"
-                    )
-                    out.parent.mkdir(parents=True, exist_ok=True)
-                    np.savez_compressed(out, **fourier_fps)
-
-            cnn_fps = cnn_skyline_encoder.create_cnn_fingerprints_from_lazy_loader(
-                skyline_mask_data, pool_target=constants.POOL_TARGET
-            )
-        if cnn_fps:
-            out = dataset_db_dir / "cnn_fingerprints" / "fingerprints.npz"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(out, **cnn_fps)
-
-        print("\nDEM skyline encoding complete.")
-        return True
+        return any_ok
     except Exception as e:
-        print(f"An error occurred during DEM encoding: {e}")
+        print(f"An error occurred during DEM Fourier encoding: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def run_dem_cnn_encoding(process_all: bool = False):
+    """
+    Stage 24: Encode DEM skyline masks with CNN (fine-tuned model optional).
+    """
+    print_stage_header(24, "DEM CNN ENCODING", "CNN fingerprints for DEM databases")
+    try:
+        db_root = Path("databases")
+        targets = _list_dem_datasets(db_root) if process_all else []
+        if not process_all:
+            picked = _pick_dem_dataset(db_root)
+            if picked is None:
+                return False
+            targets = [picked]
+
+        # Default to your fine-tuned model; falls back to MobileNet if not found.
+        model_path = Path("AI/models/finetuned_placer_ALL_best.pth")
+        if not model_path.exists():
+            print(
+                f"Warning: {model_path} not found. Falling back to MobileNetV2 preprocessing/weights."
+            )
+
+        any_ok = False
+        for ds in targets:
+            print(f"\nEncoding CNN for {ds.name}...")
+            ok = _encode_dem_cnn_for_dir(
+                ds,
+                model_path=model_path if model_path.exists() else None,
+                pool_target=constants.POOL_TARGET,
+            )
+            any_ok = any_ok or ok
+        return any_ok
+    except Exception as e:
+        print(f"An error occurred during DEM CNN encoding: {e}")
+        import traceback
+
         traceback.print_exc()
         return False
 
@@ -3189,12 +3282,10 @@ def main():
         20: ("Generate Grid-Based DEM Skyline Database", run_lidar_skyline_generation),
         21: ("Encode REAL Aligned Panoramas (Fourier)", run_skyline_fourier_encoder),
         22: ("Encode REAL Aligned Panoramas (CNN)", run_cnn_encoding),
-        23: ("Encode GRID DEM Skylines", run_dem_skyline_encoding),
+        23: ("Encode DEM Skylines (Fourier)", run_dem_fourier_encoding),
+        24: ("Encode DEM Skylines (CNN)", run_dem_cnn_encoding),
         # [PART 4: FINGERPRINT VALIDATION & ANALYSIS]
-        25: (
-            "Fourier Fingerprint Self-Matching",
-            run_matching_analysis,
-        ),
+        25: ("Fourier Fingerprint Self-Matching", run_matching_analysis),
         26: (
             "CNN Fingerprint Self-Matching",
             run_cnn_matching_analysis,
