@@ -1,13 +1,13 @@
 import contextlib
 import gc
-import math
 import os
 import random
 import sys
 import traceback
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Callable, Sequence, Union
 
 import numpy as np
 import torch
@@ -19,8 +19,6 @@ from PIL import Image
 from torch.utils.data import DataLoader, Sampler
 from torchvision import transforms
 from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
-from torchvision.transforms import InterpolationMode
-from torchvision.transforms import functional as TF
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
@@ -29,6 +27,86 @@ parent_dir = current_script_dir.parent
 sys.path.append(str(parent_dir))
 
 import constants
+
+
+@dataclass(frozen=True)
+class LossSpec:
+    name: str  # "infonce" | "triplet" | "smoothap"
+    fn: Callable[..., torch.Tensor]
+    needs_pairs: bool  # whether we need flips/iou/z_all etc
+
+
+def _norm_loss_type(x: str) -> str:
+    return x.lower().replace("-", "").replace("_", "")
+
+
+def make_loss_spec(
+    loss_type: str, *, tau=0.07, margin=0.2, gamma=0.0, r_exclude_m=50.0
+) -> LossSpec:
+    lt = _norm_loss_type(loss_type)
+    if lt == "infonce":
+
+        def _loss(
+            z_all,
+            labels_all,
+            c1_all,
+            c2_all,
+            coord_space,
+            iou_mat,
+            orig_count,
+            force_neg_mask,
+        ):
+            return infoNCE_masked_weighted(
+                z_all,
+                labels_all,
+                c1_all,
+                c2_all,
+                coord_space=coord_space,
+                tau=tau,
+                radius_exclude=r_exclude_m,
+                iou_mat=iou_mat,
+                gamma=gamma,
+                orig_count=orig_count,
+                force_neg_mask=force_neg_mask,
+            )
+
+        return LossSpec(name="infonce", fn=_loss, needs_pairs=True)
+
+    if lt == "triplet":
+
+        def _loss(
+            z_all,
+            labels_all,
+            c1_all,
+            c2_all,
+            coord_space,
+            iou_mat,
+            orig_count,
+            force_neg_mask,
+        ):
+            return triplet_semihard_loss_cosine_coords_forced(
+                z_all,
+                labels_all,
+                c1_all,
+                c2_all,
+                coord_space=coord_space,
+                margin=margin,
+                r_exclude_m=r_exclude_m,
+                force_neg_mask=force_neg_mask,
+                iou_mat=iou_mat,
+                gamma=gamma,
+            )
+
+        return LossSpec(name="triplet", fn=_loss, needs_pairs=True)
+
+    if lt == "smoothap":
+
+        def _loss(z, labels, *_, **__):  # ignores pair stuff
+            return smoothap_loss(z, labels)
+
+        return LossSpec(name="smoothap", fn=_loss, needs_pairs=False)
+
+    raise ValueError(f"Unknown loss_type={loss_type}. Use infonce|triplet|smoothap.")
 
 
 @contextlib.contextmanager
@@ -49,6 +127,145 @@ def _rng_seed_scope(seed: int):
         _random.setstate(py_state)
         torch.random.set_rng_state(torch_state)
         np.random.set_state(np_state)
+
+
+def _pattern_train_val_by_count(
+    ids: list[str],
+    order_map: dict[str, int],
+    train_len: int = 200,  # number of TRAIN ids in a cycle
+    val_len: int = 20,  # number of VAL ids right after each train chunk
+    purge_f: int = 10,  # temporal buffer (frames) to drop from TRAIN near boundaries
+):
+    """
+    Deterministic pattern split:
+        [train_len TRAIN] -> [val_len VAL] -> repeat
+    Then train-only purge: drop TRAIN ids within ±purge_f frames of any
+    TRAIN|VAL or VAL|TRAIN boundary (VAL is kept intact).
+
+    Returns (train_clean_ids, val_ids, stats)
+    """
+    # 1) sort usable ids by frame index
+    ids_sorted = sorted(ids, key=lambda k: (order_map.get(k) is None, order_map.get(k)))
+
+    # 2) assign ids by a fixed pattern: 200T -> 20V -> 200T -> 20V -> ...
+    train_ids = []
+    val_ids = []
+    segments = []  # for debugging: list of tuples (kind, start_idx, end_idx_exclusive, ids_subset)
+    i = 0
+    n = len(ids_sorted)
+    while i < n:
+        # TRAIN chunk
+        t_end = min(i + train_len, n)
+        if i < t_end:
+            seg_ids = ids_sorted[i:t_end]
+            train_ids.extend(seg_ids)
+            segments.append(("train", i, t_end, seg_ids))
+        i = t_end
+
+        # VAL chunk
+        v_end = min(i + val_len, n)
+        if i < v_end:
+            seg_ids = ids_sorted[i:v_end]
+            val_ids.extend(seg_ids)
+            segments.append(("val", i, v_end, seg_ids))
+        i = v_end
+
+    train_ids = set(train_ids)
+    val_ids = set(val_ids)
+
+    # 3) compute boundaries between adjacent train/val segments
+    def idx_of(k):
+        return order_map.get(k, -(10**9))
+
+    boundaries = []  # list of (L, R) using frame indices, for every TRAIN|VAL and VAL|TRAIN switch
+    for s in range(len(segments) - 1):
+        kind_a, _, _, ids_a = segments[s]
+        kind_b, _, _, ids_b = segments[s + 1]
+        if not ids_a or not ids_b:
+            continue
+        # Only boundaries where the kinds differ
+        if kind_a != kind_b:
+            L = max(idx_of(x) for x in ids_a)  # last frame of segment A
+            R = min(idx_of(x) for x in ids_b)  # first frame of segment B
+            boundaries.append((L, R))
+
+    # 4) train-only purge around ALL boundaries
+    def near_boundary_train(k):
+        ik = idx_of(k)
+        for L, R in boundaries:
+            # inclusive: <= purge_f gives you a full (purge_f + 1) worst-case window
+            if abs(ik - L) <= purge_f or abs(ik - R) <= purge_f:
+                return True
+        return False
+
+    drop_train = {k for k in train_ids if near_boundary_train(k)}
+    train_clean = train_ids - drop_train
+    val_clean = val_ids  # keep all val; no drop from val
+
+    # 5) stats for verification
+    stats = dict(
+        total=len(ids_sorted),
+        train_len=train_len,
+        val_len=val_len,
+        purge_f=purge_f,
+        val_segments=sum(1 for kind, *_ in segments if kind == "val"),
+        boundaries=len(boundaries),
+        purged_train=len(drop_train),
+        kept_train=len(train_clean),
+        kept_val=len(val_clean),
+        # (Optional) first few boundaries for quick eyeballing
+        boundary_samples=boundaries[: min(5, len(boundaries))],
+    )
+    return train_clean, val_clean, stats
+
+
+def _extract_frame_index_map(csv_path: Path) -> dict[str, int | None]:
+    """
+    Build stem->frame_index map from CSV.
+    Prefer column 'n' (or 'index'), else parse digits from filename stem,
+    else fall back to row order.
+    """
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    cols = {c.lower(): c for c in df.columns}
+
+    # pick filename column
+    fname_col = None
+    for k in ["filename", "file", "image", "image_name"]:
+        if k in cols:
+            fname_col = cols[k]
+            break
+    if fname_col is None:
+        raise KeyError("No filename column found for frame ordering")
+
+    # option 1: explicit index column
+    n_col = cols.get("n") or cols.get("index")
+    idx_map: dict[str, int | None] = {}
+
+    if n_col is not None:
+        for _, row in df.iterrows():
+            stem = Path(str(row[fname_col])).stem
+            try:
+                idx_map[stem] = int(row[n_col])
+            except Exception:
+                idx_map[stem] = None  # will fill later
+    else:
+        # option 2: parse digits from filename stem
+        for _, row in df.iterrows():
+            stem = Path(str(row[fname_col])).stem
+            digits = "".join(ch for ch in stem if ch.isdigit())
+            idx_map[stem] = int(digits) if digits else None
+
+    # fill any None with row order to keep determinism
+    order_ctr = 0
+    for _, row in df.iterrows():
+        stem = Path(str(row[fname_col])).stem
+        if idx_map[stem] is None:
+            idx_map[stem] = order_ctr
+        order_ctr += 1
+
+    return idx_map
 
 
 class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
@@ -72,8 +289,6 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
         self.transform = transform
 
         import pandas as pd
-
-        rng = np.random.default_rng(random_state)
 
         def circ_abs_diff_deg(a, b):
             """minimum absolute angular difference in degrees, scalar or numpy arrays"""
@@ -257,22 +472,45 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
             )
         self.coord_space = coord_spaces[0]
 
-        # per-dataset train/val split
         train_pairs, val_pairs = [], []
+
         for ds_idx, ids in enumerate(per_ds_ids):
-            ids = np.array(ids)
-            n = len(ids)
-            n_val = max(1, int(round(n * val_split)))
-            perm = rng.permutation(n)
-            val_idx = perm[:n_val]
-            train_idx = perm[n_val:]
-            chosen = (
-                ids[train_idx].tolist() if mode == "train" else ids[val_idx].tolist()
+            ds_dir = dataset_dirs[ds_idx]
+            id_to_paths = per_ds_id_to_paths[ds_idx]
+
+            # frame order
+            gps_csv = ds_dir / "gps_interpolated_with_orientation.csv"
+            order_map = _extract_frame_index_map(gps_csv)
+
+            usable_ids = list(ids)
+
+            # Apply the pattern: 300 train, 30 val
+            train_ids, val_ids, stats = _pattern_train_val_by_count(
+                ids=usable_ids,
+                order_map=order_map,
+                train_len=200,
+                val_len=20,
+                purge_f=10,  # buffer on both sides of each boundary (train-only)
             )
+
+            # print(f"Train IDs: {train_ids} \n Val IDs: {val_ids}")
+
+            print(
+                f"[{ds_dir.name}] usable={stats['total']}, val_segments={stats['val_segments']}, "
+                f"boundaries={stats['boundaries']}, purged(train={stats['purged_train']}), "
+                f"kept(train={stats['kept_train']}, val={stats['kept_val']}) "
+                f"| boundary_samples={stats['boundary_samples']}"
+            )
+
+            key_fn = lambda k: order_map.get(k, 0)
             if mode == "train":
-                train_pairs += [(ds_idx, img_id) for img_id in chosen]
+                train_pairs += [
+                    (ds_idx, img_id) for img_id in sorted(train_ids, key=key_fn)
+                ]
             else:
-                val_pairs += [(ds_idx, img_id) for img_id in chosen]
+                val_pairs += [
+                    (ds_idx, img_id) for img_id in sorted(val_ids, key=key_fn)
+                ]
 
         chosen_pairs = train_pairs if mode == "train" else val_pairs
         unique_keys = sorted(set(chosen_pairs))
@@ -686,6 +924,57 @@ def haversine_matrix(lat_deg: torch.Tensor, lon_deg: torch.Tensor) -> torch.Tens
     return R * c
 
 
+def smoothap_loss(emb, labels, tau=0.01):
+    """
+    SmoothAP surrogate (mini-batch version).
+    emb: (B,D) L2-normalized embeddings
+    labels: (B,) int labels
+    tau: temperature for pairwise sigmoid (smaller = sharper ranking)
+    Returns: scalar loss = 1 - mean(AP_i)
+    """
+    # cosine similarities
+    S = emb @ emb.t()  # (B,B)
+    B = S.size(0)
+    eye = torch.eye(B, device=S.device, dtype=torch.bool)
+    S = S.masked_fill(eye, float("-inf"))  # exclude self
+
+    # relevance matrix
+    rel = labels.view(-1, 1).eq(labels.view(1, -1)) & ~eye  # (B,B) positives per anchor
+
+    # pairwise "softer than" comparisons for each anchor i:
+    # P_ij = P(score_j < score_k) aggregated differentiably
+    # For anchor i, compare all j vs all k with a sigmoid on (S[i,k] - S[i,j])
+    # We want positives ranked above negatives.
+    pos_mask = rel
+    neg_mask = ~rel & ~eye
+
+    # Avoid empty-positive anchors
+    valid = pos_mask.any(dim=1) & neg_mask.any(dim=1)
+    if not valid.any():
+        return torch.tensor(0.0, device=emb.device, requires_grad=True)
+
+    APs = []
+    for i in torch.where(valid)[0]:
+        s_i = S[i]  # (B,)
+        pos_scores = s_i[pos_mask[i]]  # (#pos,)
+        neg_scores = s_i[neg_mask[i]]  # (#neg,)
+
+        # pairwise probability that a positive outranks a negative
+        # shape: (#pos, #neg)
+        P = torch.sigmoid((pos_scores.unsqueeze(1) - neg_scores.unsqueeze(0)) / tau)
+
+        # expected precision at the ranks of positives
+        # approx precision for each positive = mean over negatives it beats
+        prec_pos = P.mean(dim=1)  # (#pos,)
+
+        # AP for anchor i = mean precision over its positives
+        AP = prec_pos.mean()
+        APs.append(AP)
+
+    mAP_batch = torch.stack(APs).mean()
+    return 1.0 - mAP_batch
+
+
 def infoNCE_masked_weighted(
     z,
     labels,
@@ -1057,83 +1346,54 @@ class EmbeddingNet(nn.Module):
 
 
 @torch.no_grad()
-def compute_val_loss(
-    model,
-    val_loader,
-    coord_space,
-    margin,
-    r_exclude_m,
-    device,
-    gamma=0.2,
-    loss_type: str = "triplet",
-    tau: float = 0.07,
-):
+def compute_val_loss(model, val_loader, coord_space, device, loss_spec: LossSpec):
     model.eval()
     losses = []
     for imgs, profs, labels, c1, c2 in val_loader:
         imgs = imgs.to(device, non_blocking=True)
-        profs = profs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         c1 = c1.to(device, non_blocking=True)
         c2 = c2.to(device, non_blocking=True)
 
-        # embeddings for originals + flips
         z = model(imgs)
-        zf = model(torch.flip(imgs, dims=[-1]))
 
-        z_all = torch.cat([z, zf], dim=0)
+        if loss_spec.needs_pairs:
+            zf = model(torch.flip(imgs, dims=[-1]))
+            z_all = torch.cat([z, zf], dim=0)
+            B = z.shape[0]
+            labels_all = torch.cat([labels, labels + (labels.max() + 1)], dim=0)
+            c1_all = torch.cat([c1, c1], dim=0)
+            c2_all = torch.cat([c2, c2], dim=0)
 
-        # labels and coords duplicated
-        labels_shift = labels.max() + 1
-        labels_all = torch.cat([labels, labels + labels_shift], dim=0)
-        c1_all = torch.cat([c1, c1], dim=0)
-        c2_all = torch.cat([c2, c2], dim=0)
+            force_neg_mask = torch.zeros(
+                (2 * B, 2 * B), dtype=torch.bool, device=device
+            )
+            for y in labels.unique():
+                idxs = (labels == y).nonzero(as_tuple=False).squeeze(1)
+                idxs_f = idxs + B
+                force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
+                force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
 
-        # forced-negative mask (each sample vs its flip)
-        B = z.shape[0]
-        force_neg_mask = torch.zeros((2 * B, 2 * B), dtype=torch.bool, device=device)
-        for y in labels.unique():
-            idxs = (labels == y).nonzero(as_tuple=False).squeeze(1)
-            idxs_f = idxs + B
-            force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
-            force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
+            profs = profs.to(device, non_blocking=True)
+            profs_f = torch.flip(profs, dims=[-1])
+            prof_all = torch.cat([profs, profs_f], dim=0)
+            P1, P2 = prof_all.unsqueeze(1), prof_all.unsqueeze(0)
+            inter = torch.minimum(P1, P2).sum(dim=2)
+            union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
+            iou_mat = inter / union
 
-        # IoU from profiles (flip = reverse along width)
-        profs_f = torch.flip(profs, dims=[-1])
-        prof_all = torch.cat([profs, profs_f], dim=0)  # (2B,W')
-        P1 = prof_all.unsqueeze(1)  # (2B,1,W')
-        P2 = prof_all.unsqueeze(0)  # (1,2B,W')
-        inter = torch.minimum(P1, P2).sum(dim=2)  # (2B,2B)
-        union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
-        iou_mat = inter / union
-
-        if loss_type == "triplet":
-            loss = triplet_semihard_loss_cosine_coords_forced(
+            loss = loss_spec.fn(
                 z_all,
                 labels_all,
                 c1_all,
                 c2_all,
-                coord_space=coord_space,
-                margin=margin,
-                r_exclude_m=r_exclude_m,
-                force_neg_mask=force_neg_mask,
-                iou_mat=iou_mat,
-                gamma=gamma,
+                coord_space,
+                iou_mat,
+                B,
+                force_neg_mask,
             )
         else:
-            loss = infoNCE_masked_weighted(
-                z_all,
-                labels_all,
-                c1_all,
-                c2_all,
-                coord_space=coord_space,
-                tau=tau,
-                radius_exclude=r_exclude_m,
-                iou_mat=iou_mat,
-                gamma=gamma,
-                orig_count=B,  # ensure flips have NO positives
-                force_neg_mask=force_neg_mask,  # flips ARE negatives
-            )
+            loss = loss_spec.fn(z, labels, None, None, coord_space, None, None, None)
 
         losses.append(loss.item())
     return float(sum(losses) / max(1, len(losses)))
@@ -1145,26 +1405,33 @@ def train_placer_model_pk(
     num_epochs: int = 100,
     P: int = 16,
     K: int = 2,
-    margin: float = 0.1,
-    gamma: float = 0.4,
     use_amp=True,
     r_exclude_m=50.0,
     loss_type="infonce",
     tau=0.07,
+    margin=0.1,
+    gamma=0.4,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # Build loaders first so we can read coord_space
     train_ds, val_ds, train_loader, val_loader = build_pk_dataloaders(
         dataset_dir, P=P, K=K, min_iou=0.97, max_yaw_dev_deg=15.0
     )
-
     print(f"Train: {len(train_ds)} items, {len(train_ds.key2label)} unique IDs")
     print(f"Val:   {len(val_ds)} items, {len(val_ds.key2label)} unique IDs")
 
     visualize_batch(train_loader, out_dir="debug_batch", num=8)
     coord_space = getattr(train_ds, "coord_space", "geo")
     print(f"Coordinate space detected: {coord_space}")
+
+    # Now create a SINGLE loss spec and reuse it everywhere
+    loss_spec = make_loss_spec(
+        loss_type, tau=tau, margin=margin, gamma=gamma, r_exclude_m=r_exclude_m
+    )
+
+    tqdm.write(f"Starting PxK training | loss={loss_spec.name} | coord={coord_space}")
 
     embedding_dim = 128
     freeze_layers = 12
@@ -1191,11 +1458,8 @@ def train_placer_model_pk(
 
     best_score = -1.0
     epochs_no_improve = 0
-    best_path = model_save_path.with_name(
-        f"{model_save_path.stem}_best.pth"
-    )  # finetuned_placer_ALL_best.pth
+    best_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
 
-    tqdm.write(f"Starting PxK training | loss={loss_type} | coord={coord_space}")
     for epoch in range(num_epochs):
         if hasattr(train_loader.dataset, "set_epoch"):
             train_loader.dataset.set_epoch(epoch)
@@ -1209,8 +1473,8 @@ def train_placer_model_pk(
             train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Train]", leave=False
         )
         for imgs, profs, labels, c1, c2 in pbar:
-            imgs = imgs.to(device, non_blocking=True)  # (B,3,H,W')
-            profs = profs.to(device, non_blocking=True)  # (B,W')
+            imgs = imgs.to(device, non_blocking=True)
+            profs = profs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             c1 = c1.to(device, non_blocking=True)
             c2 = c2.to(device, non_blocking=True)
@@ -1219,64 +1483,50 @@ def train_placer_model_pk(
             with autocast_ctx(scaler.is_enabled()):
                 z = model(imgs)  # (B,D)
 
-                # flips (no grad, to save memory)
-                with torch.no_grad():
-                    zf = model(torch.flip(imgs, dims=[-1]))  # (B,D)
+                if loss_spec.needs_pairs:
+                    # flips (no grad to save memory)
+                    with torch.no_grad():
+                        zf = model(torch.flip(imgs, dims=[-1]))  # (B,D)
 
-                # profiles for flips are just reversed along width
-                profs_f = torch.flip(profs, dims=[-1])  # (B,W')
-                prof_all = torch.cat([profs, profs_f], dim=0)  # (2B,W')
+                    # profiles + IoU
+                    profs_f = torch.flip(profs, dims=[-1])  # (B,W')
+                    prof_all = torch.cat([profs, profs_f], dim=0)  # (2B,W')
+                    P1, P2 = prof_all.unsqueeze(1), prof_all.unsqueeze(0)
+                    inter = torch.minimum(P1, P2).sum(dim=2)
+                    union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
+                    iou_mat = inter / union  # (2B,2B)
 
-                # pairwise IoU from profiles
-                P1 = prof_all.unsqueeze(1)  # (2B,1,W')
-                P2 = prof_all.unsqueeze(0)  # (1,2B,W')
-                inter = torch.minimum(P1, P2).sum(dim=2)  # (2B,2B)
-                union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
-                iou_mat = inter / union  # (2B,2B)
+                    # pack pairs
+                    z_all = torch.cat([z, zf], dim=0)
+                    B = z.shape[0]
+                    labels_all = torch.cat([labels, labels + (labels.max() + 1)], dim=0)
+                    c1_all = torch.cat([c1, c1], dim=0)
+                    c2_all = torch.cat([c2, c2], dim=0)
 
-                z_all = torch.cat([z, zf], dim=0)  # (2B,D)
-                labels_shift = labels.max() + 1
-                labels_all = torch.cat([labels, labels + labels_shift], dim=0)
-                c1_all = torch.cat([c1, c1], dim=0)
-                c2_all = torch.cat([c2, c2], dim=0)
-
-                # forced-negative mask (same as before)
-                B = z.shape[0]
-                force_neg_mask = torch.zeros(
-                    (2 * B, 2 * B), dtype=torch.bool, device=device
-                )
-                for y in labels.unique():
-                    idxs = (labels == y).nonzero(as_tuple=False).squeeze(1)
-                    idxs_f = idxs + B
-                    force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
-                    force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
-
-                if loss_type == "triplet":
-                    loss = triplet_semihard_loss_cosine_coords_forced(
-                        z_all,
-                        labels_all,
-                        c1_all,
-                        c2_all,
-                        coord_space=coord_space,
-                        margin=margin,
-                        r_exclude_m=r_exclude_m,
-                        force_neg_mask=force_neg_mask,
-                        iou_mat=iou_mat,
-                        gamma=gamma,
+                    # flips forced-negative mask
+                    force_neg_mask = torch.zeros(
+                        (2 * B, 2 * B), dtype=torch.bool, device=device
                     )
-                elif loss_type == "infonce":
-                    loss = infoNCE_masked_weighted(
+                    for y in labels.unique():
+                        idxs = (labels == y).nonzero(as_tuple=False).squeeze(1)
+                        idxs_f = idxs + B
+                        force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
+                        force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
+
+                    loss = loss_spec.fn(
                         z_all,
                         labels_all,
                         c1_all,
                         c2_all,
-                        coord_space=coord_space,
-                        tau=tau,
-                        radius_exclude=r_exclude_m,
-                        iou_mat=iou_mat,
-                        gamma=gamma,
-                        orig_count=B,  # ensure flips have NO positives
-                        force_neg_mask=force_neg_mask,  # flips ARE negatives
+                        coord_space,
+                        iou_mat,
+                        B,
+                        force_neg_mask,
+                    )
+                else:
+                    # SmoothAP path – no pairs/IoU
+                    loss = loss_spec.fn(
+                        z, labels, None, None, coord_space, None, None, None
                     )
 
             if scaler.is_enabled():
@@ -1292,13 +1542,14 @@ def train_placer_model_pk(
 
         avg_train = float(sum(losses) / max(1, len(losses)))
 
+        # --- Validation uses the SAME loss_spec ---
         model.eval()
         with torch.no_grad():
+            # recall@k (on original views only, as before)
             all_z, all_y = [], []
-            pbar_val = tqdm(
+            for imgs, _, labels, _, _ in tqdm(
                 val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Val]", leave=False
-            )
-            for imgs, profs, labels, c1, c2 in pbar_val:
+            ):
                 imgs = imgs.to(device, non_blocking=True)
                 z = model(imgs)
                 all_z.append(z.cpu())
@@ -1308,24 +1559,14 @@ def train_placer_model_pk(
             recalls = compute_recall_at_k(embeds, labels_all, K=(1, 5, 10))
 
         r1, r5, r10 = recalls[1], recalls[5], recalls[10]
-        val_loss = compute_val_loss(
-            model,
-            val_loader,
-            coord_space,
-            margin,
-            r_exclude_m,
-            device,
-            gamma=gamma,
-            loss_type=loss_type,
-            tau=tau,
-        )
+        val_loss = compute_val_loss(model, val_loader, coord_space, device, loss_spec)
+
         tqdm.write(
             f"Epoch {epoch + 1} | TrainLoss {avg_train:.4f} | ValLoss {val_loss:.4f} | "
             f"R@1 {r1:.3f} R@5 {r5:.3f} R@10 {r10:.3f}"
         )
 
         score = r1 + 0.5 * r5 + 0.25 * r10
-
         if score > best_score:
             best_score = score
             torch.save(model.state_dict(), best_path)
@@ -1339,8 +1580,7 @@ def train_placer_model_pk(
             tqdm.write(f"  No improvement for {epochs_no_improve} epoch(s).")
 
     print(
-        f"\nTraining complete. Best model saved to {best_path.name} "
-        f"with composite score={best_score:.3f}"
+        f"\nTraining complete. Best model saved to {best_path.name} with composite score={best_score:.3f}"
     )
 
 
@@ -1391,6 +1631,7 @@ def run_finetuning_stage_pk():
             margin=0.05,  # Will be base margin. If r_exclude is small, we will effectively force images that are similar to be separated by some base margin that might be too high
             gamma=3.0,  # Gamma will be multiplied with 1 - iou between two negative points, as an added margin required. This means that images with very different iou naturally require a larger margin in the encoding
             r_exclude_m=50.0,  # The higher r_exclude, the higher we can select the base margin.
+            loss_type="infonce",
         )
         return True
     except Exception as e:
