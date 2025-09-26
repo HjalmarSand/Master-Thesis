@@ -31,7 +31,7 @@ sys.path.append(str(parent_dir))
 
 import constants
 
-# For commit
+# commit
 
 
 @dataclass(frozen=True)
