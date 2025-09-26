@@ -10,11 +10,14 @@ from pathlib import Path
 from typing import Callable, Sequence, Union
 
 import numpy as np
+import optuna
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from matplotlib import pyplot as plt
+from optuna.pruners import HyperbandPruner, SuccessiveHalvingPruner
+from optuna.samplers import TPESampler
 from PIL import Image
 from torch.utils.data import DataLoader, Sampler
 from torchvision import transforms
@@ -102,7 +105,7 @@ def make_loss_spec(
     if lt == "smoothap":
 
         def _loss(z, labels, *_, **__):  # ignores pair stuff
-            return smoothap_loss(z, labels)
+            return smoothap_loss(z, labels, tau=tau)
 
         return LossSpec(name="smoothap", fn=_loss, needs_pairs=False)
 
@@ -283,6 +286,8 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
         random_state: int = 42,
         min_iou: float = 0.97,  # Keep only data where the iou with dem and real aligned was above 0.97
         max_yaw_dev_deg: float = 15.0,  # keep only samples within ± this of dominant yaw span
+        *,
+        force_val_datasets: "Sequence[Union[str, Path]] | None" = None,
     ):
         super().__init__()
         assert mode in ("train", "val")
@@ -320,6 +325,11 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
         per_ds_id_to_paths = []
         per_ds_id_to_coord = []
         coord_spaces = []
+
+        force_val_names = set()
+        if force_val_datasets:
+            for x in force_val_datasets:
+                force_val_names.add(Path(x).name)
 
         for ds_dir in dataset_dirs:
             real_dir = ds_dir / "binary_panorama_aligned"
@@ -472,45 +482,78 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
             )
         self.coord_space = coord_spaces[0]
 
+        # train_pairs, val_pairs = [], []
+
+        # for ds_idx, ids in enumerate(per_ds_ids):
+        #    ds_dir = dataset_dirs[ds_idx]
+        #    id_to_paths = per_ds_id_to_paths[ds_idx]
+
+        # frame order
+        #    gps_csv = ds_dir / "gps_interpolated_with_orientation.csv"
+        #    order_map = _extract_frame_index_map(gps_csv)
+
+        #    usable_ids = list(ids)
+
+        # Apply the pattern: 300 train, 30 val
+        #    train_ids, val_ids, stats = _pattern_train_val_by_count(
+        #        ids=usable_ids,
+        #        order_map=order_map,
+        #        train_len=200,
+        #        val_len=20,
+        #        purge_f=10,  # buffer on both sides of each boundary (train-only)
+        #    )
+
+        # print(f"Train IDs: {train_ids} \n Val IDs: {val_ids}")
+
+        #    print(
+        #        f"[{ds_dir.name}] usable={stats['total']}, val_segments={stats['val_segments']}, "
+        #        f"boundaries={stats['boundaries']}, purged(train={stats['purged_train']}), "
+        #        f"kept(train={stats['kept_train']}, val={stats['kept_val']}) "
+        #        f"| boundary_samples={stats['boundary_samples']}"
+        #    )
+
+        #    key_fn = lambda k: order_map.get(k, 0)
+        #    if mode == "train":
+        #        train_pairs += [
+        #            (ds_idx, img_id) for img_id in sorted(train_ids, key=key_fn)
+        #        ]
+        #    else:
+        #        val_pairs += [
+        #            (ds_idx, img_id) for img_id in sorted(val_ids, key=key_fn)
+        #        ]
+
         train_pairs, val_pairs = [], []
 
         for ds_idx, ids in enumerate(per_ds_ids):
             ds_dir = dataset_dirs[ds_idx]
             id_to_paths = per_ds_id_to_paths[ds_idx]
 
-            # frame order
+            # deterministically sort by frame index for stable ordering
             gps_csv = ds_dir / "gps_interpolated_with_orientation.csv"
             order_map = _extract_frame_index_map(gps_csv)
-
+            key_fn = lambda k: order_map.get(k, 0)
             usable_ids = list(ids)
 
-            # Apply the pattern: 300 train, 30 val
-            train_ids, val_ids, stats = _pattern_train_val_by_count(
-                ids=usable_ids,
-                order_map=order_map,
-                train_len=200,
-                val_len=20,
-                purge_f=10,  # buffer on both sides of each boundary (train-only)
-            )
-
-            # print(f"Train IDs: {train_ids} \n Val IDs: {val_ids}")
-
-            print(
-                f"[{ds_dir.name}] usable={stats['total']}, val_segments={stats['val_segments']}, "
-                f"boundaries={stats['boundaries']}, purged(train={stats['purged_train']}), "
-                f"kept(train={stats['kept_train']}, val={stats['kept_val']}) "
-                f"| boundary_samples={stats['boundary_samples']}"
-            )
-
-            key_fn = lambda k: order_map.get(k, 0)
-            if mode == "train":
-                train_pairs += [
-                    (ds_idx, img_id) for img_id in sorted(train_ids, key=key_fn)
-                ]
+            if ds_dir.name in force_val_names:
+                # Entire dataset goes to VAL only
+                if mode == "val":
+                    val_pairs += [
+                        (ds_idx, img_id) for img_id in sorted(usable_ids, key=key_fn)
+                    ]
+                    print(
+                        f"[{ds_dir.name}] Using FULL dataset for VAL only; excluded from TRAIN."
+                    )
+                # if mode == "train": skip entirely
             else:
-                val_pairs += [
-                    (ds_idx, img_id) for img_id in sorted(val_ids, key=key_fn)
-                ]
+                # All other datasets go to TRAIN only
+                if mode == "train":
+                    train_pairs += [
+                        (ds_idx, img_id) for img_id in sorted(usable_ids, key=key_fn)
+                    ]
+                    print(
+                        f"[{ds_dir.name}] Using FULL dataset for TRAIN only; excluded from VAL."
+                    )
+                # if mode == "val": skip entirely
 
         chosen_pairs = train_pairs if mode == "train" else val_pairs
         unique_keys = sorted(set(chosen_pairs))
@@ -544,7 +587,7 @@ class SkylineIdentityMultiDataset(torch.utils.data.Dataset):
                     elevations=arr,
                     output_width=getattr(constants, "PANORAMA_IMG_WIDTH", 5120),
                     output_height=getattr(constants, "PANORAMA_IMG_HEIGHT", 960),
-                    v_fov_deg=90.0,
+                    v_fov_deg=73.74,
                     median_kernel=19,
                 )
             return Image.fromarray(mask)
@@ -1140,6 +1183,10 @@ def build_pk_dataloaders(
     pin_memory: bool = True,
     min_iou: float = 0.95,
     max_yaw_dev_deg: float = 15.0,
+    train_transform=None,
+    val_transform=None,
+    *,
+    force_val_datasets: "Sequence[Union[str, Path]] | None" = None,
 ):
     if isinstance(dataset_dir, (list, tuple)):
         dataset_dirs = list(dataset_dir)
@@ -1149,20 +1196,22 @@ def build_pk_dataloaders(
     train_ds = SkylineIdentityMultiDataset(
         dataset_dirs,
         mode="train",
-        transform=make_train_transform(),
+        transform=train_transform or make_train_transform(),
         val_split=val_split,
         random_state=random_state,
         min_iou=min_iou,
         max_yaw_dev_deg=max_yaw_dev_deg,
+        force_val_datasets=force_val_datasets,
     )
     val_ds = SkylineIdentityMultiDataset(
         dataset_dirs,
         mode="val",
-        transform=make_val_transform(),
+        transform=val_transform or make_val_transform(),
         val_split=val_split,
         random_state=random_state,
         min_iou=min_iou,
         max_yaw_dev_deg=max_yaw_dev_deg,
+        force_val_datasets=force_val_datasets,
     )
 
     train_loader = DataLoader(
@@ -1172,6 +1221,7 @@ def build_pk_dataloaders(
         ),
         num_workers=num_workers,
         pin_memory=pin_memory,
+        persistent_workers=True,
     )
     val_loader = DataLoader(
         val_ds,
@@ -1180,6 +1230,7 @@ def build_pk_dataloaders(
         ),
         num_workers=num_workers,
         pin_memory=pin_memory,
+        persistent_workers=True,
     )
     return train_ds, val_ds, train_loader, val_loader
 
@@ -1399,6 +1450,110 @@ def compute_val_loss(model, val_loader, coord_space, device, loss_spec: LossSpec
     return float(sum(losses) / max(1, len(losses)))
 
 
+def objective(trial):
+    seed = 1234 + trial.number
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    num_epochs = 60
+
+    # search space
+    loss_type = trial.suggest_categorical(
+        "loss_type", ["infonce", "triplet", "smoothap"]
+    )
+    use_amp = trial.suggest_categorical("use_amp", [True, False])
+    freeze_layers = trial.suggest_categorical("freeze_layers", [12, 17, 19])
+    embedding_dim = trial.suggest_categorical("embedding_dim", [64, 128, 256])
+    lr_head = trial.suggest_float("lr_head", 5e-4, 5e-3, log=True)
+    lr_bb = trial.suggest_float(
+        "lr_backbone", 5e-5, 5e-4, log=True
+    )  # TODO: if all layers frozen this can be neglected
+    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
+    morph_p = trial.suggest_float("morph_p", 0.0, 0.6)
+    w_shrink = trial.suggest_categorical("w_shrink", [2, 4])
+    P = trial.suggest_categorical(
+        "P", [8, 12, 16]
+    )  # TODO: Might need to be decreased for RAM
+    K = 2  # keep 2. There is only one positive per batch
+    use_flips = trial.suggest_categorical("use_flips_as_negs", [True, False])
+    r_exclude_m = trial.suggest_categorical("r_exclude_m", [25.0, 50.0, 100.0])
+
+    # loss-specific params
+    tau = 0.07
+    margin = 0.1
+    gamma = 0.0
+    if loss_type == "infonce":
+        tau = trial.suggest_float("tau", 0.03, 0.2, log=True)
+        gamma = trial.suggest_float("gamma", 0.0, 4.0)
+    elif loss_type == "triplet":
+        margin = trial.suggest_float("margin", 0.02, 0.3)
+        gamma = trial.suggest_float("gamma", 0.0, 4.0)
+    else:  # smoothap
+        tau = trial.suggest_float("tau", 0.001, 0.1, log=True)
+
+    cfg = dict(
+        loss_type=loss_type,
+        use_amp=use_amp,
+        freeze_layers=freeze_layers,
+        embedding_dim=embedding_dim,
+        lr_head=lr_head,
+        lr_backbone=lr_bb,
+        weight_decay=weight_decay,
+        morph_p=morph_p,
+        w_shrink=w_shrink,
+        P=P,
+        K=K,
+        use_flips_as_negs=use_flips,
+        r_exclude_m=r_exclude_m,
+        tau=tau,
+        margin=margin,
+        gamma=gamma,
+        # num_epochs can be short here; ASHA promotes good trials
+    )
+
+    # paths/datasets
+    datasets_root_dir = Path(constants.IMAGES_DIR)
+    project_root = Path(__file__).resolve().parent.parent
+    model_path = (
+        project_root / "AI" / "models" / "optuna" / f"optuna_trial_{trial.number}.pth"
+    )
+
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # run (shorter epochs for HPO; ASHA will promote)
+    score = train_placer_model_pk(
+        dataset_dir=[
+            d
+            for d in datasets_root_dir.iterdir()
+            if (d / "dem_skylines_paired").is_dir()
+        ],
+        model_save_path=model_path,
+        num_epochs=num_epochs,
+        config=cfg,
+        optuna_trial=trial,
+        force_val_datasets={"dataset1"},
+    )
+    return score
+
+
+def run_hpo():
+    storage = f"sqlite:///{Path(__file__).resolve().parent}/optuna_skyline.db"
+    study = optuna.create_study(
+        study_name="placer_hpo",
+        direction="maximize",
+        storage=storage,
+        load_if_exists=True,
+        sampler=TPESampler(multivariate=True, group=True, consider_prior=True),
+        pruner=HyperbandPruner(min_resource=10, max_resource=60, reduction_factor=3),
+    )
+    study.optimize(objective, n_trials=50, n_jobs=1, show_progress_bar=True)
+
+    print("Best value:", study.best_value)
+    print("Best params:", study.best_params)
+
+
 def train_placer_model_pk(
     dataset_dir: Path,
     model_save_path: Path,
@@ -1411,34 +1566,61 @@ def train_placer_model_pk(
     tau=0.07,
     margin=0.1,
     gamma=0.4,
+    *,
+    config: dict | None = None,
+    optuna_trial: "optuna.trial.Trial | None" = None,
+    force_val_datasets: "Sequence[Union[str, Path]] | None" = None,  # <-- add
 ):
+    cfg = config or {}
+    loss_type = cfg.get("loss_type", loss_type)
+    tau = cfg.get("tau", tau)
+    margin = cfg.get("margin", margin)
+    gamma = cfg.get("gamma", gamma)
+    r_exclude_m = cfg.get("r_exclude_m", r_exclude_m)
+    use_amp = cfg.get("use_amp", use_amp)
+    P = cfg.get("P", P)
+    K = cfg.get("K", K)
+    freeze_layers = cfg.get("freeze_layers", 12)
+    embedding_dim = cfg.get("embedding_dim", 128)
+    lr_head = cfg.get("lr_head", 1e-3)
+    lr_backbone = cfg.get("lr_backbone", 1e-4)
+    weight_decay = cfg.get("weight_decay", 1e-4)
+    morph_p = cfg.get("morph_p", 0.4)
+    w_shrink = cfg.get("w_shrink", 2)
+    use_flips_as_negs = cfg.get("use_flips_as_negs", True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Build loaders first so we can read coord_space
+    train_tf = TrainBinaryTransform(w_shrink=w_shrink, morph_p=morph_p)
+    val_tf = ValBinaryTransform(w_shrink=w_shrink)
+
     train_ds, val_ds, train_loader, val_loader = build_pk_dataloaders(
-        dataset_dir, P=P, K=K, min_iou=0.97, max_yaw_dev_deg=15.0
+        dataset_dir,
+        P=P,
+        K=K,
+        min_iou=0.97,
+        max_yaw_dev_deg=15.0,
+        train_transform=train_tf,
+        val_transform=val_tf,
+        force_val_datasets=force_val_datasets,
     )
+
     print(f"Train: {len(train_ds)} items, {len(train_ds.key2label)} unique IDs")
     print(f"Val:   {len(val_ds)} items, {len(val_ds.key2label)} unique IDs")
 
-    visualize_batch(train_loader, out_dir="debug_batch", num=8)
     coord_space = getattr(train_ds, "coord_space", "geo")
     print(f"Coordinate space detected: {coord_space}")
 
-    # Now create a SINGLE loss spec and reuse it everywhere
     loss_spec = make_loss_spec(
         loss_type, tau=tau, margin=margin, gamma=gamma, r_exclude_m=r_exclude_m
     )
-
     tqdm.write(f"Starting PxK training | loss={loss_spec.name} | coord={coord_space}")
 
-    embedding_dim = 128
-    freeze_layers = 12
+    #  backbone / head with tuned knobs
     model = EmbeddingNet(embedding_dim=embedding_dim, freeze_layers=freeze_layers).to(
         device
     )
-    print(f"Using embedding dim {embedding_dim} and freezing {freeze_layers}")
 
     head_params = list(model.backbone.classifier.parameters())
     backbone_params = [
@@ -1448,8 +1630,12 @@ def train_placer_model_pk(
     ]
     optimizer = optim.AdamW(
         [
-            {"params": head_params, "lr": 1e-3, "weight_decay": 1e-4},
-            {"params": backbone_params, "lr": 1e-4, "weight_decay": 1e-4},
+            {"params": head_params, "lr": lr_head, "weight_decay": weight_decay},
+            {
+                "params": backbone_params,
+                "lr": lr_backbone,
+                "weight_decay": weight_decay,
+            },
         ]
     )
 
@@ -1457,131 +1643,139 @@ def train_placer_model_pk(
     autocast_ctx = lambda enabled: torch.amp.autocast("cuda", enabled=enabled)
 
     best_score = -1.0
-    epochs_no_improve = 0
     best_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
+    try:
+        for epoch in range(num_epochs):
+            if hasattr(train_loader.dataset, "set_epoch"):
+                train_loader.dataset.set_epoch(epoch)
+            if hasattr(val_loader.dataset, "set_epoch"):
+                val_loader.dataset.set_epoch(epoch)
 
-    for epoch in range(num_epochs):
-        if hasattr(train_loader.dataset, "set_epoch"):
-            train_loader.dataset.set_epoch(epoch)
-        if hasattr(val_loader.dataset, "set_epoch"):
-            val_loader.dataset.set_epoch(epoch)
+            model.train()
+            losses = []
 
-        model.train()
-        losses = []
-
-        pbar = tqdm(
-            train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Train]", leave=False
-        )
-        for imgs, profs, labels, c1, c2 in pbar:
-            imgs = imgs.to(device, non_blocking=True)
-            profs = profs.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            c1 = c1.to(device, non_blocking=True)
-            c2 = c2.to(device, non_blocking=True)
-
-            optimizer.zero_grad(set_to_none=True)
-            with autocast_ctx(scaler.is_enabled()):
-                z = model(imgs)  # (B,D)
-
-                if loss_spec.needs_pairs:
-                    # flips (no grad to save memory)
-                    with torch.no_grad():
-                        zf = model(torch.flip(imgs, dims=[-1]))  # (B,D)
-
-                    # profiles + IoU
-                    profs_f = torch.flip(profs, dims=[-1])  # (B,W')
-                    prof_all = torch.cat([profs, profs_f], dim=0)  # (2B,W')
-                    P1, P2 = prof_all.unsqueeze(1), prof_all.unsqueeze(0)
-                    inter = torch.minimum(P1, P2).sum(dim=2)
-                    union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
-                    iou_mat = inter / union  # (2B,2B)
-
-                    # pack pairs
-                    z_all = torch.cat([z, zf], dim=0)
-                    B = z.shape[0]
-                    labels_all = torch.cat([labels, labels + (labels.max() + 1)], dim=0)
-                    c1_all = torch.cat([c1, c1], dim=0)
-                    c2_all = torch.cat([c2, c2], dim=0)
-
-                    # flips forced-negative mask
-                    force_neg_mask = torch.zeros(
-                        (2 * B, 2 * B), dtype=torch.bool, device=device
-                    )
-                    for y in labels.unique():
-                        idxs = (labels == y).nonzero(as_tuple=False).squeeze(1)
-                        idxs_f = idxs + B
-                        force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
-                        force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
-
-                    loss = loss_spec.fn(
-                        z_all,
-                        labels_all,
-                        c1_all,
-                        c2_all,
-                        coord_space,
-                        iou_mat,
-                        B,
-                        force_neg_mask,
-                    )
-                else:
-                    # SmoothAP path – no pairs/IoU
-                    loss = loss_spec.fn(
-                        z, labels, None, None, coord_space, None, None, None
-                    )
-
-            if scaler.is_enabled():
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-
-            losses.append(loss.item())
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
-
-        avg_train = float(sum(losses) / max(1, len(losses)))
-
-        # --- Validation uses the SAME loss_spec ---
-        model.eval()
-        with torch.no_grad():
-            # recall@k (on original views only, as before)
-            all_z, all_y = [], []
-            for imgs, _, labels, _, _ in tqdm(
-                val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [Val]", leave=False
+            for imgs, profs, labels, c1, c2 in tqdm(
+                train_loader,
+                desc=f"Epoch {epoch + 1}/{num_epochs} [Train]",
+                leave=False,
             ):
                 imgs = imgs.to(device, non_blocking=True)
-                z = model(imgs)
-                all_z.append(z.cpu())
-                all_y.append(labels.cpu())
-            embeds = torch.cat(all_z, dim=0)
-            labels_all = torch.cat(all_y, dim=0)
-            recalls = compute_recall_at_k(embeds, labels_all, K=(1, 5, 10))
+                profs = profs.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                c1 = c1.to(device, non_blocking=True)
+                c2 = c2.to(device, non_blocking=True)
 
-        r1, r5, r10 = recalls[1], recalls[5], recalls[10]
-        val_loss = compute_val_loss(model, val_loader, coord_space, device, loss_spec)
+                optimizer.zero_grad(set_to_none=True)
+                with autocast_ctx(scaler.is_enabled()):
+                    z = model(imgs)
 
-        tqdm.write(
-            f"Epoch {epoch + 1} | TrainLoss {avg_train:.4f} | ValLoss {val_loss:.4f} | "
-            f"R@1 {r1:.3f} R@5 {r5:.3f} R@10 {r10:.3f}"
-        )
+                    if loss_spec.needs_pairs and use_flips_as_negs:
+                        with torch.no_grad():
+                            zf = model(torch.flip(imgs, dims=[-1]))
+                        profs_f = torch.flip(profs, dims=[-1])
+                        prof_all = torch.cat([profs, profs_f], dim=0)
+                        P1, P2 = prof_all.unsqueeze(1), prof_all.unsqueeze(0)
+                        inter = torch.minimum(P1, P2).sum(dim=2)
+                        union = torch.maximum(P1, P2).sum(dim=2).clamp_min(1e-8)
+                        iou_mat = inter / union
 
-        score = r1 + 0.5 * r5 + 0.25 * r10
-        if score > best_score:
-            best_score = score
-            torch.save(model.state_dict(), best_path)
-            tqdm.write(
-                f"New best model saved with score={best_score:.3f} "
-                f"(R@1={r1:.3f}, R@5={r5:.3f}, R@10={r10:.3f})"
+                        z_all = torch.cat([z, zf], dim=0)
+                        B = z.shape[0]
+                        labels_all = torch.cat(
+                            [labels, labels + (labels.max() + 1)], dim=0
+                        )
+                        c1_all = torch.cat([c1, c1], dim=0)
+                        c2_all = torch.cat([c2, c2], dim=0)
+
+                        force_neg_mask = torch.zeros(
+                            (2 * B, 2 * B), dtype=torch.bool, device=device
+                        )
+                        for y in labels.unique():
+                            idxs = (labels == y).nonzero(as_tuple=False).squeeze(1)
+                            idxs_f = idxs + B
+                            force_neg_mask[idxs[:, None], idxs_f[None, :]] = True
+                            force_neg_mask[idxs_f[:, None], idxs[None, :]] = True
+
+                        loss = loss_spec.fn(
+                            z_all,
+                            labels_all,
+                            c1_all,
+                            c2_all,
+                            coord_space,
+                            iou_mat,
+                            B,
+                            force_neg_mask,
+                        )
+                    else:
+                        # no flips path (still works with PK=2 positives in-batch)
+                        loss = loss_spec.fn(
+                            z, labels, c1, c2, coord_space, None, None, None
+                        )
+
+                if scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
+
+                losses.append(loss.item())
+
+            avg_train = float(np.mean(losses)) if losses else 0.0
+
+            #  Validation (same loss)
+            model.eval()
+            with torch.no_grad():
+                all_z, all_y = [], []
+                for imgs, _, labels, _, _ in tqdm(
+                    val_loader,
+                    desc=f"Epoch {epoch + 1}/{num_epochs} [Val]",
+                    leave=False,
+                ):
+                    imgs = imgs.to(device, non_blocking=True)
+                    z = model(imgs)
+                    all_z.append(z.cpu())
+                    all_y.append(labels.cpu())
+                embeds = torch.cat(all_z, dim=0)
+                labels_all = torch.cat(all_y, dim=0)
+                recalls = compute_recall_at_k(embeds, labels_all, K=(1, 5, 10))
+
+            r1, r5, r10 = recalls[1], recalls[5], recalls[10]
+            val_loss = compute_val_loss(
+                model, val_loader, coord_space, device, loss_spec
             )
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
-            tqdm.write(f"  No improvement for {epochs_no_improve} epoch(s).")
 
-    print(
-        f"\nTraining complete. Best model saved to {best_path.name} with composite score={best_score:.3f}"
-    )
+            score = (
+                r1 + 0.5 * r5 + 0.25 * r10
+            )  # composite metric, maybe change to give less value to r1 since this is very random?
+            tqdm.write(
+                f"Epoch {epoch + 1} | TrainLoss {avg_train:.4f} | ValLoss {val_loss:.4f} | "
+                f"R@1 {r1:.3f} R@5 {r5:.3f} R@10 {r10:.3f} | Score {score:.3f}"
+            )
+
+            # Optuna reporting + pruning
+            if optuna_trial is not None:
+                optuna_trial.set_user_attr("best_ckpt", str(best_path))
+                optuna_trial.report(score, step=epoch)
+                if optuna_trial.should_prune():
+                    print(f"Pruned with params:\n{cfg}")
+                    raise optuna.TrialPruned()
+
+            if score > best_score:
+                best_score = score
+                torch.save(model.state_dict(), best_path)
+                tqdm.write(f"New best saved: {best_path.name} (score={best_score:.3f})")
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            torch.cuda.empty_cache()
+            print(f"[Trial {optuna_trial.number}] CUDA OOM with params:\n{cfg}")
+            raise optuna.TrialPruned()
+        else:
+            raise
+
+    print(f"\nTraining complete. Best score={best_score:.3f} | ckpt={best_path.name}")
+    return best_score  # Optuna will maximize this
 
 
 def compute_recall_at_k(embeds, labels, K=(1, 5, 10)):
@@ -1655,15 +1849,46 @@ if __name__ == "__main__":
     gc.collect()
     torch.cuda.empty_cache()
 
-    datasets_root_dir = Path(constants.IMAGES_DIR)
-    try:
-        sample_img = pick_any_binary_panorama(datasets_root_dir)
-        visualize_transform_pipeline(
-            img_path=str(sample_img),
-            out_dir="debug_vis_sample",
-            train=True,
-        )
-    except Exception as e:
-        print(f"Visualization skipped: {e}")
+    # datasets_root_dir = Path(constants.IMAGES_DIR)
+    # try:
+    #    sample_img = pick_any_binary_panorama(datasets_root_dir)
+    #    visualize_transform_pipeline(
+    #        img_path=str(sample_img),
+    #        out_dir="debug_vis_sample",
+    #        train=True,
+    #    )
+    # except Exception as e:
+    #    print(f"Visualization skipped: {e}")
 
-    run_finetuning_stage_pk()
+    # run_finetuning_stage_pk()
+    # run_hpo()
+
+    storage = f"sqlite:///{Path(__file__).resolve().parent}/optuna_skyline.db"
+    study = optuna.load_study(study_name="placer_hpo", storage=storage)
+
+    best = study.best_trial
+    print("Best trial #:", best.number)
+    print("Best score :", best.value)
+    print("Best params:", best.params)
+
+    # you set this in train_placer_model_pk via optuna_trial.set_user_attr("best_ckpt", ...)
+    best_ckpt = best.user_attrs.get("best_ckpt")
+    print("Best ckpt  :", best_ckpt)
+
+    datasets_root_dir = Path(constants.IMAGES_DIR)
+    selected_dirs = [
+        d for d in datasets_root_dir.iterdir() if (d / "dem_skylines_paired").is_dir()
+    ]
+
+    project_root = Path(__file__).resolve().parent.parent
+    out_path = project_root / "AI" / "models" / "best_longrun.pth"
+
+    score = train_placer_model_pk(
+        dataset_dir=selected_dirs,
+        model_save_path=out_path,
+        num_epochs=400,
+        config=best.params,
+        optuna_trial=None,
+        force_val_datasets={"dataset1"},
+    )
+    print("Final long-run score:", score)

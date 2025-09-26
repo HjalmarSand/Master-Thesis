@@ -132,7 +132,7 @@ def generate_skyline_mask_array(
     final_elevations = np.roll(filtered_elevations, pixels_to_roll)
 
     # Convert elevation angles to pixel rows
-    v_fov = 90.0  # Vertical Field of View (-45 to +45 degrees)
+    v_fov = 73.74  # TODO: This needs to be updated dynamically depending on the undistorted images and simulated camera details. Depending on the images pixel output, HFOV this VFOV also changes. This value right now corresponds to 90HFOV 1280x960 pixel undistored images
     top_elevation = v_fov / 2.0
     skyline_rows = np.clip(
         np.round(((top_elevation - final_elevations) / v_fov) * output_height),

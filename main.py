@@ -2678,11 +2678,13 @@ def run_roll_angle_training():
             images_root / "dataset2" / "distorted_images_cam1": "roll_back",
             images_root / "dataset3" / "distorted_images_cam1": "roll_back",
             images_root / "dataset4" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset5" / "distorted_images_cam1": "roll_back",
             # Front Camera sources map to the 'roll_front' column
             images_root / "dataset1" / "distorted_images_cam2": "roll_front",
             images_root / "dataset2" / "distorted_images_cam2": "roll_front",
             images_root / "dataset3" / "distorted_images_cam2": "roll_front",
             images_root / "dataset4" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset5" / "distorted_images_cam2": "roll_front",
         }
 
         # Filter out any sources where the directory doesn't actually exist
@@ -2743,11 +2745,13 @@ def run_roll_model_evaluation():
             images_root / "dataset2" / "distorted_images_cam1": "roll_back",
             images_root / "dataset3" / "distorted_images_cam1": "roll_back",
             images_root / "dataset4" / "distorted_images_cam1": "roll_back",
+            images_root / "dataset5" / "distorted_images_cam1": "roll_back",
             # Front Camera sources map to the 'roll_front' column
             images_root / "dataset1" / "distorted_images_cam2": "roll_front",
             images_root / "dataset2" / "distorted_images_cam2": "roll_front",
             images_root / "dataset3" / "distorted_images_cam2": "roll_front",
             images_root / "dataset4" / "distorted_images_cam2": "roll_front",
+            images_root / "dataset5" / "distorted_images_cam2": "roll_front",
         }
         valid_training_sources = {
             path: col for path, col in training_sources.items() if path.is_dir()

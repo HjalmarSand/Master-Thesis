@@ -12,10 +12,29 @@ import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
 from PIL import Image
 from sklearn.model_selection import KFold
+from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, random_split
+from torchvision.transforms import InterpolationMode
 from tqdm import tqdm
 
 from utils.utility import get_original_numbered_file_name
+
+LOSS_TYPE = "smoothl1"  # options: "smoothl1", "mse", "mae"
+SMOOTHL1_BETA = 1.0
+
+
+def make_criterion():
+    if LOSS_TYPE.lower() == "smoothl1":
+        try:
+            return nn.SmoothL1Loss(beta=SMOOTHL1_BETA)
+        except TypeError:
+            return nn.SmoothL1Loss()
+    elif LOSS_TYPE.lower() == "mse":
+        return nn.MSELoss()
+    elif LOSS_TYPE.lower() == "mae":
+        return nn.L1Loss()
+    else:
+        raise ValueError(f"Unknown LOSS_TYPE: {LOSS_TYPE}")
 
 
 # 1. Custom PyTorch Dataset
@@ -71,8 +90,6 @@ class RollAngleDataset(Dataset):
         img_path, roll_angle = self.data_points[index]
         image = Image.open(img_path).convert("L")
 
-        image = TF.center_crop(image, [300, 300])
-
         # AUGMENTATION LOGIC
         # Apply augmentations only in 'train' mode
         if self.mode == "train":
@@ -80,7 +97,13 @@ class RollAngleDataset(Dataset):
             rotation_angle = random.uniform(-10, 10)
 
             # 2. Apply the rotation to the image
-            image = TF.rotate(image, angle=rotation_angle)
+            image = TF.rotate(
+                image,
+                angle=rotation_angle,
+                interpolation=InterpolationMode.BILINEAR,
+                fill=0,
+                expand=False,
+            )
 
             # 3. Correct the label by the same amount
             roll_angle += rotation_angle
@@ -99,9 +122,15 @@ class RollAngleDataset(Dataset):
                     image, contrast_factor=random.uniform(0.7, 1.3)
                 )
 
-        # STANDARD TRANSFORMS (for both train and eval)
-        image = TF.to_tensor(image)
-        image = TF.normalize(image, mean=[0.5], std=[0.5])
+            image = TF.center_crop(image, [300, 300])
+
+            image = TF.to_tensor(image)
+            image = TF.normalize(image, mean=[0.5], std=[0.5])
+        else:
+            # STANDARD TRANSFORMS (for both train and eval)
+            image = TF.center_crop(image, [300, 300])
+            image = TF.to_tensor(image)
+            image = TF.normalize(image, mean=[0.5], std=[0.5])
 
         # FOCUS MASK
         # _, height, width = image.shape
@@ -120,46 +149,58 @@ class RollAngleDataset(Dataset):
 # 2. Simple CNN Model for Regression
 class RollEstimatorCNN(nn.Module):
     def __init__(self):
-        super(RollEstimatorCNN, self).__init__()
+        super().__init__()
         self.conv_layers = nn.Sequential(
-            # Block 1
-            nn.Conv2d(1, 32, kernel_size=5, stride=1, padding=2),  # More filters
+            nn.Conv2d(1, 32, kernel_size=5, padding=2),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 32 x 112 x 112
-            # Block 2
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 64 x 56 x 56
-            # Block 3
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 128 x 28 x 28
-            # Block 4
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 256 x 14 x 14
-            # Block 5
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2),
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # Output: 512 x 7 x 7
+            nn.MaxPool2d(2),
         )
-        self.flatten = nn.Flatten()
-
-        self.fc_layers = nn.Sequential(
-            nn.Linear(512 * 9 * 9, 1024),
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512, 128),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 1),
+            nn.Dropout(0.15),
+            nn.Linear(128, 1),
         )
 
     def forward(self, x):
         x = self.conv_layers(x)
-        x = self.flatten(x)
-        x = self.fc_layers(x)
-        return x
+        x = self.gap(x)
+        return self.head(x)
+
+        # self.fc_layers = nn.Sequential(
+        #    nn.Linear(512 * 9 * 9, 1024),
+        #    nn.ReLU(),
+        #    nn.Dropout(0.5),
+        #    nn.Linear(1024, 512),
+        #    nn.ReLU(),
+        #    nn.Dropout(0.5),
+        #    nn.Linear(512, 1),
+        # )
+
+    # def forward(self, x):
+    #     x = self.conv_layers(x)
+    #    x = self.flatten(x)
+    #    x = self.fc_layers(x)
+    #    return x
 
 
 # 3. Main Training Function
@@ -209,8 +250,8 @@ def train_roll_estimator(
     train_sampler = SubsetRandomSampler(train_subset.indices)
     val_sampler = SubsetRandomSampler(val_subset.indices)
 
-    print(f"Total training set size: {len(train_sampler)}")
-    print(f"Total validation set size: {len(val_sampler)}")
+    print(f"Total training set size: {len(train_subset)}")
+    print(f"Total validation set size: {len(val_subset)}")
 
     # 5. Create DataLoaders using the datasets and their respective samplers
     train_loader = DataLoader(
@@ -221,10 +262,8 @@ def train_roll_estimator(
     )
 
     model = RollEstimatorCNN().to(device)
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=learning_rate, weight_decay=1e-5
-    )
+    criterion = make_criterion()
+    optimizer = AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
 
     best_val_loss = float("inf")
     best_model_path = model_save_path.with_name(f"{model_save_path.stem}_best.pth")
@@ -470,7 +509,7 @@ def run_kfold_cross_validation(
         )
 
         model = RollEstimatorCNN().to(device)
-        criterion = nn.MSELoss()
+        criterion = make_criterion()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         # The inner training loop remains the same
@@ -549,11 +588,11 @@ def analyze_model_performance(
     # We only need the validation sampler and loader
     # IMPORTANT: Set shuffle=False in the loader to keep the order consistent
     # with the dataset indices, which makes matching paths easier.
+    val_sampler = SubsetRandomSampler(val_subset.indices)
     val_loader = DataLoader(
         val_dataset,
         batch_size=32,
-        sampler=val_subset.indices,  # Use the indices from our split
-        shuffle=False,  # Do not shuffle for analysis
+        sampler=val_sampler,  # do not pass shuffle when sampler is set
     )
 
     # 2. Load the model

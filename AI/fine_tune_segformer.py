@@ -207,7 +207,7 @@ model = SegformerForSemanticSegmentation.from_pretrained(
     ignore_mismatched_sizes=True,
 )
 
-# Freeze backbone; train full decode head (unchanged from your intent)
+# Freeze backbone; train full decode head
 for _, p in model.named_parameters():
     p.requires_grad = False
 for name, p in model.named_parameters():
@@ -309,138 +309,147 @@ if not dataset_configs:
 
     sys.exit(1)
 
-OUTPUT_DIR = (
-    constants.PROJECT_ROOT / "AI/models/segformer-b5-sky-finetuned-multi-dataset"
-)
-SKY_CATEGORY_ID = 1
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EPOCHS = 150
-BATCH_SIZE = 4
-LEARNING_RATE = 5e-5
+def main():
+    OUTPUT_DIR = (
+        constants.PROJECT_ROOT / "AI/models/segformer-b5-sky-finetuned-multi-dataset"
+    )
+    SKY_CATEGORY_ID = 1
 
-# 2. Create Datasets and Dataloaders
-full_train = SkySegmentationDataset(dataset_configs, processor, transform=train_tf)
-full_val = SkySegmentationDataset(dataset_configs, processor, transform=val_tf)
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    EPOCHS = 150
+    BATCH_SIZE = 4
+    LEARNING_RATE = 5e-5
 
-train_indices, val_indices = random_split_per_dataset(
-    full_train, val_ratio=0.2, seed=42
-)
+    # 2. Create Datasets and Dataloaders
+    full_train = SkySegmentationDataset(dataset_configs, processor, transform=train_tf)
+    full_val = SkySegmentationDataset(dataset_configs, processor, transform=val_tf)
 
-train_subset = Subset(full_train, train_indices)
-val_subset = Subset(full_val, val_indices)
+    train_indices, val_indices = random_split_per_dataset(
+        full_train, val_ratio=0.2, seed=42
+    )
 
-split_summary(train_subset, "TRAIN")
-split_summary(val_subset, "VAL")
+    train_subset = Subset(full_train, train_indices)
+    val_subset = Subset(full_val, val_indices)
 
-print("unique samples:", len(full_train))
-print("overlap:", len(set(train_subset.indices) & set(val_subset.indices)))
-print("cover:", len(set(train_subset.indices) | set(val_subset.indices)))
+    split_summary(train_subset, "TRAIN")
+    split_summary(val_subset, "VAL")
 
+    print("unique samples:", len(full_train))
+    print("overlap:", len(set(train_subset.indices) & set(val_subset.indices)))
+    print("cover:", len(set(train_subset.indices) | set(val_subset.indices)))
 
-pos_weight = estimate_pos_weight(train_subset).to(DEVICE)
-print(f"pos_weight for BCE: {pos_weight.item():.3f}")
+    pos_weight = estimate_pos_weight(train_subset).to(DEVICE)
+    print(f"pos_weight for BCE: {pos_weight.item():.3f}")
 
-criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-train_dataloader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
-val_dataloader = DataLoader(val_subset, batch_size=BATCH_SIZE)
+    train_dataloader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
+    val_dataloader = DataLoader(val_subset, batch_size=BATCH_SIZE)
 
-b = next(iter(val_dataloader))
-print(
-    "uniques in val labels:", sorted([int(v) for v in torch.unique(b["labels"])])
-)  # expect [0,1] (no 255)
-print("sky pixel ratio:", ((b["labels"] == 1).float().mean().item()))
-print("val batch label shape:", b["labels"].shape)
+    b = next(iter(val_dataloader))
+    print(
+        "uniques in val labels:", sorted([int(v) for v in torch.unique(b["labels"])])
+    )  # expect [0,1] (no 255)
+    print("sky pixel ratio:", ((b["labels"] == 1).float().mean().item()))
+    print("val batch label shape:", b["labels"].shape)
 
-# 3. Setup Optimizer and Metric
-model.to(DEVICE)
-# Passing only the parameters that are trainable to the optimizer
-optimizer = torch.optim.AdamW(
-    (p for p in model.parameters() if p.requires_grad),
-    lr=LEARNING_RATE,
-    weight_decay=0.01,
-)
+    # 3. Setup Optimizer and Metric
+    model.to(DEVICE)
+    # Passing only the parameters that are trainable to the optimizer
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=LEARNING_RATE,
+        weight_decay=0.01,
+    )
 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",  # because we want to maximize mIoU
+        factor=0.5,  # reduce LR by half
+        patience=2,  # wait 2 epochs with no improvement
+    )
 
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer,
-    mode="max",  # because we want to maximize mIoU
-    factor=0.5,  # reduce LR by half
-    patience=2,  # wait 2 epochs with no improvement
-)
+    # 4. The Training Loop
+    best_score = 0.0
+    for epoch in range(EPOCHS):
+        print(f"\nEpoch {epoch + 1}/{EPOCHS}")
 
-# 4. The Training Loop
-best_score = 0.0
-for epoch in range(EPOCHS):
-    print(f"\nEpoch {epoch + 1}/{EPOCHS}")
-
-    # TRAIN
-    model.train()
-    for batch in tqdm(train_dataloader, desc="Training"):
-        pixel_values = batch["pixel_values"].to(DEVICE)
-        labels = batch["labels"].to(DEVICE)  # {0,1,255}
-
-        optimizer.zero_grad()
-
-        outputs = model(pixel_values=pixel_values, labels=None)  # we'll compute loss
-        # logits: [B, 1, h, w]
-        logits = torch.nn.functional.interpolate(
-            outputs.logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
-        ).squeeze(1)  # -> [B, H, W]
-
-        valid = labels != 255
-        y = (labels == 1).float()
-        if valid.any().item():
-            loss = criterion(logits[valid], y[valid])
-            loss.backward()
-            optimizer.step()
-
-    # VALIDATE
-    model.eval()
-    tot_intersection = 0
-    tot_union = 0
-
-    with torch.no_grad():
-        for batch in tqdm(val_dataloader, desc="Validation"):
+        # TRAIN
+        model.train()
+        for batch in tqdm(train_dataloader, desc="Training"):
             pixel_values = batch["pixel_values"].to(DEVICE)
-            labels = batch["labels"].to(DEVICE)
+            labels = batch["labels"].to(DEVICE)  # {0,1,255}
 
-            outputs = model(pixel_values=pixel_values, labels=None)
+            optimizer.zero_grad()
+
+            outputs = model(
+                pixel_values=pixel_values, labels=None
+            )  # we'll compute loss
+            # logits: [B, 1, h, w]
             logits = torch.nn.functional.interpolate(
                 outputs.logits,
                 size=labels.shape[-2:],
                 mode="bilinear",
                 align_corners=False,
-            ).squeeze(1)  # [B,H,W]
+            ).squeeze(1)  # -> [B, H, W]
 
-            probs = torch.sigmoid(logits)
-            preds = probs > 0.5  # sky prediction
-            gt = labels == 1
             valid = labels != 255
+            y = (labels == 1).float()
+            if valid.any().item():
+                loss = criterion(logits[valid], y[valid])
+                loss.backward()
+                optimizer.step()
 
-            # mask invalid pixels
-            preds = preds & valid
-            gt = gt & valid
+        # VALIDATE
+        model.eval()
+        tot_intersection = 0
+        tot_union = 0
 
-            intersection = (preds & gt).sum().item()
-            union = (preds | gt).sum().item()
-            tot_intersection += intersection
-            tot_union += union
+        with torch.no_grad():
+            for batch in tqdm(val_dataloader, desc="Validation"):
+                pixel_values = batch["pixel_values"].to(DEVICE)
+                labels = batch["labels"].to(DEVICE)
 
-    # sky IoU (handle empty-union case)
-    sky_iou = (tot_intersection / tot_union) if tot_union > 0 else 0.0
+                outputs = model(pixel_values=pixel_values, labels=None)
+                logits = torch.nn.functional.interpolate(
+                    outputs.logits,
+                    size=labels.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(1)  # [B,H,W]
 
-    print(f"  Validation Sky IoU: {sky_iou:.4f}")
+                probs = torch.sigmoid(logits)
+                preds = probs > 0.5  # sky prediction
+                gt = labels == 1
+                valid = labels != 255
 
-    scheduler.step(sky_iou)
+                # mask invalid pixels
+                preds = preds & valid
+                gt = gt & valid
 
-    if sky_iou > best_score:
-        best_score = sky_iou
-        print(f"  New best Sky IoU! Saving model to {OUTPUT_DIR}")
-        model.save_pretrained(OUTPUT_DIR)
-        processor.save_pretrained(OUTPUT_DIR)
+                intersection = (preds & gt).sum().item()
+                union = (preds | gt).sum().item()
+                tot_intersection += intersection
+                tot_union += union
 
-print(
-    f"\nTraining finished! Best Sky IoU: {best_score:.4f}. Model saved to {OUTPUT_DIR}"
-)
+        # sky IoU (handle empty-union case)
+        sky_iou = (tot_intersection / tot_union) if tot_union > 0 else 0.0
+
+        print(f"  Validation Sky IoU: {sky_iou:.4f}")
+
+        scheduler.step(sky_iou)
+
+        if sky_iou > best_score:
+            best_score = sky_iou
+            print(f"  New best Sky IoU! Saving model to {OUTPUT_DIR}")
+            model.save_pretrained(OUTPUT_DIR)
+            processor.save_pretrained(OUTPUT_DIR)
+
+    print(
+        f"\nTraining finished! Best Sky IoU: {best_score:.4f}. Model saved to {OUTPUT_DIR}"
+    )
+
+
+if __name__ == "__main__":
+    main()

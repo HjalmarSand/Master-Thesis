@@ -1,0 +1,9 @@
+Dataset,Model,IoU,Pixel Accuracy,Recall,Precision,F1-score
+Dataset 1,Segformer-b5,78.29,88.21,91.39,84.53,87.82
+Dataset 1,Segformer-b5f,99.64,99.83,99.87,99.77,99.82
+Dataset 2,Segformer-b5,66.94,80.98,88.87,73.06,80.19
+Dataset 2,Segformer-b5f,99.00,99.57,99.39,99.61,99.50
+Dataset 3,Segformer-b5,57.45,77.13,69.97,76.26,72.98
+Dataset 3,Segformer-b5f,99.37,99.72,99.85,99.52,99.68
+\textbf{Average},Segformer-b5,68.01,82.35,83.85,78.26,80.96
+\textbf{Average},Segformer-b5f,99.36,99.71,99.72,99.64,99.68

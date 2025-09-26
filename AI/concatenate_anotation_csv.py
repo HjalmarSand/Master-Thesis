@@ -112,6 +112,9 @@ def create_master_annotations():
             os.path.join(script_dir, "roll_annotations4.csv"), 4, 450
         )
     )
+    priority_dfs.append(
+        process_annotation_file(os.path.join(script_dir, "roll_annotations5.csv"), 5, 0)
+    )
 
     # secondary_dfs.append(process_roll_file(os.path.join(script_dir, "roll2.csv"), 2))
     # secondary_dfs.append(process_roll_file(os.path.join(script_dir, "roll3.csv"), 3))
